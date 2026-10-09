@@ -251,3 +251,65 @@ def test_jsonl_gz_grava_le_e_e_deterministico(tmp_path):
 def test_base_padrao_e_gz():
     from factcheck_mvp import indice
     assert ing.ARQ_CHECAGENS.name == "checagens.jsonl.gz" == indice.ARQ_CHECAGENS.name
+
+
+def _rss_cats(itens):
+    xs = "".join(f"<item><title>{t}</title><link>{l}</link>" + "".join(f"<category>{c}</category>" for c in cs)
+                 + "</item>" for t, l, cs in itens)
+    return f'<?xml version="1.0"?><rss version="2.0"><channel>{xs}</channel></rss>'.encode()
+
+
+def test_lupa_so_categorias_de_checagem(monkeypatch):
+    """F3: RSS da Lupa traz reportagem/opinião; fica o que é Verificação/Checagem/Achado ou tem selo."""
+    lupa = next(f for f in ing.FONTES if f["agencia"] == "lupa")
+    assert "categories=142,147,6915" in lupa["wpjson_params"]
+    rss = _rss_cats([("Vídeo antigo de Lula é editado", "https://lupa.test/v", ["Jornalismo", "Verificação"]),
+                     ("Zema recorre a fake contra Lula", "https://lupa.test/r", ["Jornalismo", "Reportagem"]),
+                     ("É falso que X fez Y", "https://lupa.test/s", ["Jornalismo", "Reportagem"]),
+                     ("Sem categoria no feed", "https://lupa.test/n", [])])
+    monkeypatch.setattr(ing.Baixador, "baixar", lambda self, url: (200, rss, url) if "feed" in url else (404, b"", url))
+    fonte = dict(lupa, feeds=["https://lupa.test/feed/"], wpjson=None)
+    b = ing.Baixador()
+    try:
+        links = [it["link"] for it in ing.coletar_itens(b, fonte, 100, 1, [], None)]
+    finally:
+        b.fechar()
+    assert links == ["https://lupa.test/v", "https://lupa.test/s", "https://lupa.test/n"]
+
+
+def test_podar_fora_das_categorias(monkeypatch):
+    lupa = next(f for f in ing.FONTES if f["agencia"] == "lupa")
+    pag1 = json.dumps([{"link": f"https://lupa.test/c{i}/"} for i in range(100)]).encode()
+    pag2 = json.dumps([{"link": "https://lupa.test/c100/"}]).encode()
+    pedidas = []
+
+    def baixar(self, url):
+        pedidas.append(url)
+        return (200, pag1 if "page=1&" in url else pag2, url)
+    monkeypatch.setattr(ing.Baixador, "baixar", baixar)
+    regs = [{"agencia": "lupa", "url": "https://lupa.test/c5", "veredito": None},     # na categoria: fica
+            {"agencia": "lupa", "url": "https://lupa.test/rep", "veredito": None},    # fora e sem selo: sai
+            {"agencia": "lupa", "url": "https://lupa.test/rep2", "veredito": "FALSO"},  # fora com selo: fica
+            {"agencia": "boatos", "url": "https://boatos.test/x", "veredito": None}]  # outra agência: fica
+    b = ing.Baixador()
+    try:
+        ficam, saem = ing.podar_fora_das_categorias(b, lupa, regs, log=lambda *a: None)
+    finally:
+        b.fechar()
+    assert [r["url"] for r in saem] == ["https://lupa.test/rep"]
+    assert len(ficam) == 3 and all("categories=142,147,6915" in u and "_fields=link" in u for u in pedidas)
+    assert len(pedidas) == 2
+
+
+def test_podar_cancela_com_lista_incompleta(monkeypatch):
+    lupa = next(f for f in ing.FONTES if f["agencia"] == "lupa")
+    pag1 = json.dumps([{"link": f"https://lupa.test/c{i}/"} for i in range(100)]).encode()
+    monkeypatch.setattr(ing.Baixador, "baixar",
+                        lambda self, url: (200, pag1, url) if "page=1&" in url else (503, b"", url))
+    regs = [{"agencia": "lupa", "url": "https://lupa.test/rep", "veredito": None}]
+    b = ing.Baixador()
+    try:
+        ficam, saem = ing.podar_fora_das_categorias(b, lupa, regs, log=lambda *a: None)
+    finally:
+        b.fechar()
+    assert ficam == regs and saem == []

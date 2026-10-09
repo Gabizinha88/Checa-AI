@@ -59,7 +59,12 @@ FONTES: List[Dict[str, Any]] = [
     {"agencia": "lupa", "nome": "Lupa",
      "feeds": ["https://www.agencialupa.org/feed/"],
      # o feed da Lupa ignora ?paged=N; a API REST do WordPress pagina de verdade
-     "wpjson": "https://www.agencialupa.org/wp-json/wp/v2/posts"},
+     "wpjson": "https://www.agencialupa.org/wp-json/wp/v2/posts",
+     # só Verificação (142), Checagem (147) e Achado (6915): "Jornalismo" (8 mil posts) é guarda-chuva
+     # de reportagem, opinião e institucional, que entravam na base sem selo (F3, 09/10/2026)
+     "wpjson_params": "&categories=142,147,6915",
+     # mesmo filtro no RSS (que traz as categorias por nome); item com selo no título fica sempre
+     "categorias": ["Verificação", "Checagem", "Achado"]},
     {"agencia": "boatos", "nome": "Boatos.org",
      "feeds": ["https://www.boatos.org/feed"], "paginar": True,
      # API REST pagina o histórico inteiro (~15 mil posts em 10/2026; o RSS só os recentes)
@@ -688,9 +693,13 @@ def coletar_itens(b: Baixador, fonte: Dict[str, Any], max_por_feed: int, paginas
     vistos, saida = set(), []
     rx_url = re.compile(fonte["ignorar_url"], re.I) if fonte.get("ignorar_url") else None
     rx_tit = re.compile(fonte["ignorar_titulo"], re.I) if fonte.get("ignorar_titulo") else None
+    cats_ok = {_sem_acento(c).lower() for c in fonte.get("categorias") or []}
     for it in itens:
         k = chave_url(it.get("link", ""))
         if not it.get("link") or k in vistos:
+            continue
+        if cats_ok and it.get("categorias") and not cats_ok & {_sem_acento(c).lower() for c in it["categorias"]} \
+                and not veredito_do_titulo(it.get("titulo", ""), fonte["agencia"])[0]:
             continue
         if rx_url and rx_url.search(it["link"]):
             continue
@@ -699,6 +708,36 @@ def coletar_itens(b: Baixador, fonte: Dict[str, Any], max_por_feed: int, paginas
         vistos.add(k)
         saida.append(it)
     return saida
+
+
+def podar_fora_das_categorias(b: Baixador, fonte: Dict[str, Any], registros: List[Dict[str, Any]],
+                              log=print) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """-> (ficam, saem). Tira da base os registros SEM selo da agência que não estão nas categorias
+    de `wpjson_params` (lista de links pela API). Página com erro = lista incompleta: não poda nada."""
+    m = re.search(r"categories=([\d,]+)", fonte.get("wpjson_params") or "")
+    if not (m and fonte.get("wpjson")):
+        return registros, []
+    links: set = set()
+    for pg in range(1, 1000):
+        url = f"{fonte['wpjson']}?per_page=100&page={pg}&_fields=link&categories={m.group(1)}"
+        cod, corpo, _ = b.baixar(url)
+        try:
+            lote = json.loads(corpo) if cod == 200 else None
+        except ValueError:
+            lote = None
+        if not isinstance(lote, list):
+            log(f"  [{fonte['agencia']}] lista de categorias incompleta (HTTP {cod} na página {pg}): nada podado")
+            return registros, []
+        links |= {chave_url(d.get("link", "")) for d in lote if isinstance(d, dict) and d.get("link")}
+        if len(lote) < 100:
+            break
+    ag = fonte["agencia"]
+    ficam, saem = [], []
+    for r in registros:
+        fora = r.get("agencia") == ag and not r.get("veredito") and chave_url(r.get("url", "")) not in links
+        (saem if fora else ficam).append(r)
+    log(f"  [{ag}] {len(links)} links nas categorias; {len(saem)} registros sem selo fora delas saem")
+    return ficam, saem
 
 
 def processar_fonte(b: Baixador, fonte: Dict[str, Any], max_por_feed: int, paginas_feed: int,
@@ -819,6 +858,30 @@ def reprocessar(caminho: Optional[Path] = None, log=print) -> Dict[str, int]:
     return {"total": len(regs), "selo": n_selo, "afirmacao": n_afirm}
 
 
+def podar(caminho: Optional[Path] = None, agencias: Optional[List[str]] = None,
+          log_podados: Optional[Path] = None, log=print) -> Dict[str, int]:
+    """Aplica `podar_fora_das_categorias` às fontes com filtro de categoria e grava a base.
+    O que saiu vai para `log_podados` (padrão runs/podados-AAAA-MM-DD.jsonl, fora do git)."""
+    caminho = caminho or ARQ_CHECAGENS
+    regs = carregar_jsonl(caminho)
+    antes, todos_saem = len(regs), []
+    b = Baixador()
+    try:
+        for f in FONTES:
+            if (agencias and f["agencia"] not in agencias) or "categories=" not in (f.get("wpjson_params") or ""):
+                continue
+            regs, saem = podar_fora_das_categorias(b, f, regs, log)
+            todos_saem += saem
+    finally:
+        b.fechar()
+    if todos_saem:
+        log_podados = log_podados or BASE_DIR.parent / "runs" / f"podados-{datetime.now():%Y-%m-%d}.jsonl"
+        gravar_jsonl(log_podados, todos_saem)
+        gravar_jsonl(caminho, regs)
+        log(f"podados: {len(todos_saem)} (lista em {log_podados}) | base: {antes} -> {len(regs)}")
+    return {"antes": antes, "depois": len(regs), "podados": len(todos_saem)}
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description="Ingere checagens (RSS + JSON-LD ClaimReview) em data/checagens.jsonl.gz")
     ap.add_argument("--max-por-feed", type=int, default=100, help="teto de itens por feed/página de feed")
@@ -830,7 +893,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--agencias", default="", help="só estas agências (ids separados por vírgula)")
     ap.add_argument("--reprocessar", action="store_true",
                     help="sem rede: reaplica as regras de selo/afirmação ao arquivo existente")
+    ap.add_argument("--podar-categorias", action="store_true",
+                    help="tira da base os registros sem selo fora das categorias de checagem (ex.: Lupa)")
     args = ap.parse_args(argv)
+    if args.podar_categorias:
+        podar(args.saida, [a.strip() for a in args.agencias.split(",") if a.strip()] or None)
+        return 0
     if args.reprocessar:
         reprocessar(args.saida)
         return 0
