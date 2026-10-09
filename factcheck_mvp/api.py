@@ -11,7 +11,7 @@ from collections import defaultdict
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
-from . import config
+from . import config, llm_openrouter
 from .catalogo import Catalogo
 from .indice import Indice
 from .pipeline import Pipeline
@@ -69,6 +69,7 @@ def saude():
             "serpapi_estrategia": getattr(config, "SERP_ESTRATEGIA", "agente"),
             "serpapi_uso_hoje": p.serpapi.uso_hoje,
             "serpapi_cap": getattr(config, "SERPAPI_DAILY_CAP", 100),
+            "openrouter": llm_openrouter.status_chave(),
             "versao": "mvp-0.2.0"}
 
 

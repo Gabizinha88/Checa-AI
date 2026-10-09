@@ -270,6 +270,19 @@ def formatar(rel: RelatorioChecagem) -> str:
     return texto[:3900].rsplit("\n", 1)[0]  # corta em quebra de linha, nunca no meio da URL
 
 
+def aviso_llm() -> str:
+    """Linha de alerta quando o OpenRouter recusa a chave (F5). Rede instável (ok=None) não alarma."""
+    try:
+        from . import llm_openrouter
+        st = llm_openrouter.status_chave()
+    except Exception:
+        return ""
+    if st.get("ok") is False:
+        return ("⚠️ LLM indisponível (" + str(st.get("erro") or "chave do OpenRouter") + "): avise o "
+                "administrador. Esta checagem usou só regras simples e pode ficar indeterminada.")
+    return ""
+
+
 async def _start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message:
         await update.message.reply_text(AJUDA)
@@ -325,7 +338,9 @@ async def _checar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                        "propensao": rel.propensao, "header": rel.header}
         while len(pend) > 500:
             pend.pop(next(iter(pend)))
-        await aviso.edit_text(formatar(rel), reply_markup=_teclado_feedback(chave))
+        alerta = aviso_llm()
+        await aviso.edit_text(formatar(rel) + (f"\n\n{alerta}" if alerta else ""),
+                              reply_markup=_teclado_feedback(chave))
     except Exception:
         uid = update.effective_user.id if update.effective_user else "?"
         log.exception("falha na checagem (user=%s)", uid)  # detalhe só no servidor
