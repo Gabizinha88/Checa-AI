@@ -248,12 +248,59 @@ def test_reformular_fallback_marcado(monkeypatch):
     assert len(q.split()) <= 32
 
 
+@pytest.mark.parametrize("consulta", [
+    "Michelle Bolsonaro Lula joias",      # nome próprio que não está na afirmação
+    "Michelle Bolsonaro joias é falso",   # palavra de veredito puxa checagem de outro boato
+    "michelle bolsonaro joias checagem",
+    "boato joias Michelle Bolsonaro",
+])
+def test_reformular_rejeita_entidade_inventada_e_palavra_de_veredito(monkeypatch, consulta):
+    monkeypatch.setattr(config, "OPENROUTER_API_KEY", "")
+    respostas = [consulta, "Michelle Bolsonaro joias sauditas receita federal"]
+    prompts = []
+
+    def fake(messages, max_tokens, timeout_s, finalidade):
+        prompts.append(messages[-1]["content"])
+        return json.dumps({"consulta": respostas[min(len(prompts) - 1, 1)]}), "fake"
+    monkeypatch.setattr(llm, "_local", fake)
+    al = _alvo(0, "Michelle Bolsonaro vendeu joias sauditas", "michelle bolsonaro joias")
+    q, motor = agente.reformular(al, ["michelle bolsonaro joias"], [])
+    assert len(prompts) == 2 and motor.startswith("llm-reformular")  # 1ª rejeitada -> retry
+    assert q == "Michelle Bolsonaro joias sauditas receita federal"  # sinônimo/termo comum: aceito
+
+
+def test_reformular_aceita_palavra_de_veredito_que_esta_na_afirmacao(monkeypatch):
+    monkeypatch.setattr(config, "OPENROUTER_API_KEY", "")
+    monkeypatch.setattr(llm, "_local", lambda *a, **k: (json.dumps({"consulta": "Comissão da Verdade relatório mortos"}), "fake"))
+    al = _alvo(0, "A Comissão da Verdade listou 434 mortos", "comissão da verdade mortos")
+    q, _ = agente.reformular(al, ["comissão da verdade mortos"], [])
+    assert q == "Comissão da Verdade relatório mortos"
+
+
+def test_prompt_e_fallback_de_reformular_sem_palavra_de_veredito(monkeypatch):
+    assert '"é falso", "checagem"' not in agente.PROMPT_REFORMULAR  # não sugere mais palavra de veredito
+    assert "Não use palavras de veredito" in agente.PROMPT_REFORMULAR
+    assert "Não acrescente pessoas" in agente.PROMPT_REFORMULAR
+    al = _alvo(0, "Ibuprofeno cura dengue em 3 dias", "ibuprofeno cura dengue")
+    feitas = ["ibuprofeno cura dengue"]
+    vistos = set()
+    for _ in range(3):
+        q = agente._fallback_reformular(al, feitas)
+        if q is None:
+            break
+        assert not ({"falso", "checagem", "verdade", "boato"} & set(agente._norm(q).split())), q
+        assert q not in vistos
+        vistos.add(q)
+        feitas.append(q)
+    assert vistos
+
+
 # ----------------------------------------------------------------------------- pipeline (integração)
 REGRAS_IBU = [(r"[^.]*(ibuprofeno[^.]*(é falso|não cura)|(é falso|não cura)[^.]*ibuprofeno)[^.]*", "REFUTA"),
               (r"[^.]*ibuprofeno[^.]*comprov[^.]*", "SUSTENTA")]
 
 
-def _llm_falso(regras, consulta_nova="ibuprofeno dengue risco hemorragia checagem", chamadas=None):
+def _llm_falso(regras, consulta_nova="ibuprofeno dengue risco hemorragia anvisa", chamadas=None):
     def fake(messages, max_tokens, timeout_s, finalidade):
         conteudo = messages[-1]["content"]
         if chamadas is not None:
@@ -336,7 +383,7 @@ def test_critico_nao_para_com_checagem_fora_do_tema_e_onda_extra_acha_evidencia(
                 "Ibuprofeno não cura dengue", "É falso que o ibuprofeno cura dengue; o remédio aumenta o risco.")
     g1 = _pag(amb, "https://g1.globo.com/saude/noticia/2026/09/ibuprofeno-dengue.ghtml",
               "Médicos alertam sobre dengue", "Especialistas explicam que o ibuprofeno não cura dengue e é contraindicado.")
-    nova = "ibuprofeno dengue risco hemorragia checagem"
+    nova = "ibuprofeno dengue risco hemorragia anvisa"
 
     def rota(q):
         if q == nova:
@@ -361,7 +408,7 @@ def test_critico_nao_para_com_checagem_fora_do_tema_e_onda_extra_acha_evidencia(
 def test_onda_extra_quando_zero_resultados(amb):
     lupa = _pag(amb, "https://lupa.uol.com.br/jornalismo/2026/09/ibuprofeno/", "Ibuprofeno e dengue",
                 "É falso que o ibuprofeno cura dengue, dizem infectologistas.")
-    nova = "ibuprofeno dengue risco hemorragia checagem"
+    nova = "ibuprofeno dengue risco hemorragia anvisa"
     serp = FakeSerp(lambda q: [lupa] if q == nova else [])
     rel = asyncio.run(_rodar("Ibuprofeno cura dengue", serp))
     crit = [d for t, d in amb["eventos"] if t == "agente"]
@@ -391,7 +438,7 @@ def test_url_da_onda_extra_ja_vista_ganha_a_afirmacao(amb):
     vier para outra afirmação; para a mesma afirmação não entra de novo no juiz."""
     fora = _pag(amb, "https://exame.com/casa/receita-bolo-cenoura/", "Receita de bolo",
                 "O bolo leva três ovos.")
-    nova = "ibuprofeno dengue risco hemorragia checagem"
+    nova = "ibuprofeno dengue risco hemorragia anvisa"
     serp = FakeSerp(lambda q: [fora])
     rel = asyncio.run(_rodar("Ibuprofeno cura dengue", serp))
     assert len(serp.chamadas) == 3 and serp.chamadas[-1] == nova

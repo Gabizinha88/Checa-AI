@@ -425,7 +425,9 @@ PROMPT_REFORMULAR = """Você ajuda a checar fatos buscando no Google. As buscas 
 
 Regras:
 - Mantenha as entidades centrais da afirmação (pessoas, órgãos, números, lugares, substâncias).
-- Troque ou acrescente termos que um jornalista ou checador usaria: sinônimo, nome técnico, nome popular, órgão oficial, "é falso", "checagem".
+- Troque ou acrescente termos que um jornalista usaria: sinônimo, nome técnico, nome popular.
+- Não acrescente pessoas, órgãos ou lugares que não estão na afirmação.
+- Não use palavras de veredito ("falso", "boato", "checagem", "verdade"): elas trazem checagens de outros boatos.
 - Não repita nenhuma das consultas já feitas.
 - Não use operadores de busca (site:, aspas, OR, sinal de menos).
 - Evite os assuntos das páginas fora do tema listadas: elas mostram para onde a busca derivou.
@@ -466,11 +468,29 @@ def montar_prompt_reformular(afirmacao: str, feitas: Sequence[str], fora: Sequen
         fora="\n".join(f"- {t or '(sem título)'} — {d or '?'}" for t, d in list(fora)[:8]) or "- (nenhuma)")
 
 
+# Palavras de veredito puxam checagens de OUTROS boatos (sondas 09/10): fora da reformulação.
+_VEREDITO = frozenset("falso falsa fake boato boatos checagem checagens checado checada mentira mentiras "
+                      "verdade verdadeiro verdadeira desmentido desmente enganoso enganosa hoax".split())
+
+
+def _problema_consulta(c: str, afirmacao: str) -> Optional[str]:
+    """Motivo para rejeitar a consulta reformulada, ou None. Palavras que já estão na afirmação valem."""
+    da_afirmacao = set(_norm(afirmacao).split())
+    veredito = sorted((set(_norm(c).split()) & _VEREDITO) - da_afirmacao)
+    if veredito:
+        return f"não use palavras de veredito ({', '.join(veredito)}); use só termos do assunto"
+    novos = [p for p in c.split()[1:] if p[:1].isupper() and _norm(p) and _norm(p) not in da_afirmacao]
+    if novos:
+        return f"não acrescente nomes que não estão na afirmação ({', '.join(novos)})"
+    return None
+
+
 def _fallback_reformular(alvo: Alvo, feitas: Sequence[str]) -> Optional[str]:
+    from .afirmacoes import palavras_chave
     termos = consulta_padrao(alvo.texto)
     feitas_n = {_norm(camada.limitar_palavras(q)) for q in feitas}
-    for cand in (f"{termos} é verdade ou falso", f"{termos} checagem", f"{termos} falso"):
-        if _norm(cand) not in feitas_n:
+    for cand in (alvo.consulta, termos, palavras_chave(alvo.texto, 5), f"{termos} notícia"):
+        if cand and _norm(cand) not in feitas_n:
             return cand
     return None
 
@@ -487,6 +507,9 @@ def reformular(alvo: Alvo, feitas: Sequence[str], fora: Sequence[Tuple[str, str]
             raise ValueError("a consulta precisa ter pelo menos 2 palavras-chave")
         if _norm(c) in feitas_n:
             raise ValueError("a consulta repete uma das consultas já feitas; escreva uma diferente")
+        problema = _problema_consulta(c, alvo.texto)
+        if problema:
+            raise ValueError(problema)
         dados.consulta = c
         return dados
 
