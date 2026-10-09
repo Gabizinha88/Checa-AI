@@ -85,6 +85,39 @@ def test_plano_onda1_consulta_depois_agencias_e_max_32_palavras():
         assert len(q["q"].split()) <= 32, q["q"]
 
 
+def test_plano_onda1_sites_separados(monkeypatch):
+    """D1: modo `separado` = 1 consulta `site:` por agência (as k primeiras), intercaladas por agência."""
+    monkeypatch.setattr(config, "AGENTE_SITES_MODO", "separado")
+    monkeypatch.setattr(config, "AGENTE_SITES_SEPARADOS", 2)
+    ags = [{"id": "a", "site": "a.org"}, {"id": "a", "site": "a2.org"},  # alias da mesma agência: pula
+           {"id": "b", "site": "g1.globo.com/fato-ou-fake"}, {"id": "c", "site": "c.org"}]
+    alvos = [_alvo(0, "Ibuprofeno cura dengue", "ibuprofeno cura dengue"), _alvo(1, "vacina dna", "vacina altera dna")]
+    plano = agente.plano_onda1(alvos, ags)
+    assert [(q["q"], ais) for q, ais, _ in plano] == [
+        ("ibuprofeno cura dengue", [0]), ("vacina altera dna", [1]),
+        ("ibuprofeno cura dengue site:a.org", [0]), ("vacina altera dna site:a.org", [1]),
+        ("ibuprofeno cura dengue site:g1.globo.com/fato-ou-fake", [0]),
+        ("vacina altera dna site:g1.globo.com/fato-ou-fake", [1])]
+    assert [m for _, _, m in plano][2:4] == ["agencia a", "agencia a"]
+    monkeypatch.setattr(config, "AGENTE_SITES_MODO", "or")
+    assert [m.split(" ")[0] for _, _, m in agente.plano_onda1(alvos, ags)] == ["consulta", "consulta", "agencias", "agencias"]
+
+
+def test_onda1_sites_separados_respeita_teto(monkeypatch):
+    monkeypatch.setattr(config, "AGENTE_SITES_MODO", "separado")
+    monkeypatch.setattr(config, "AGENTE_SITES_SEPARADOS", 3)
+    cli = FakeSerp(lambda q: [])
+    alvos = [_alvo(i, f"afirmacao numero {i} sobre tema", f"tema {i} consulta") for i in range(3)]
+    est = _rodar_onda1(alvos, cli, teto=9, max_extras=1)
+    assert len(cli.chamadas) == 6  # 9 - 3 de reserva p/ ondas extras
+    simples = {q for q in cli.chamadas if "site:" not in q}
+    com_site = [q for q in cli.chamadas if "site:" in q]
+    assert simples == {"tema 0 consulta", "tema 1 consulta", "tema 2 consulta"}
+    # as 3 buscas site: restantes = a 1ª agência para CADA afirmação (intercalado), não 3 agências da 1ª
+    assert len(com_site) == 3 and {q.split(" site:")[0] for q in com_site} == simples
+    assert len({q.split(" site:")[1] for q in com_site}) == 1
+
+
 def test_consulta_fallback_usa_termos_de_conteudo():
     al = agente.alvos_de([Afirmacao(texto="O ibuprofeno cura a dengue em 3 dias", consulta="")])[0]
     assert al.consulta and "ibuprofeno" in al.consulta.lower() and " a " not in f" {al.consulta} "

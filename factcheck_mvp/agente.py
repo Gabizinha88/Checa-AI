@@ -287,12 +287,36 @@ def plano_onda1(alvos: Sequence[Alvo], agencias: Optional[List[Dict[str, Any]]] 
                 ) -> List[Tuple[Dict[str, Any], List[int], str]]:
     """(a) consulta de todas as afirmações, depois (b) consulta + site: das agências."""
     agencias = agencias if agencias is not None else camada.agencias_checagem()
+    if getattr(config, "AGENTE_SITES_MODO", "or") == "separado":
+        return _plano_sites_separados(alvos, agencias)
     a, b = [], []
     for al in alvos:
         a.append((camada._base(al.consulta, "google"), [al.indice], "consulta"))
         q_ag, fora = camada.query_agencias(al.consulta, agencias)
         if "site:" in q_ag["q"]:
             b.append((q_ag, [al.indice], "agencias" + (f" (-{len(fora)} fora do limite)" if fora else "")))
+    return _agrupar_iguais(a + b)
+
+
+def _plano_sites_separados(alvos: Sequence[Alvo], agencias: List[Dict[str, Any]]
+                           ) -> List[Tuple[Dict[str, Any], List[int], str]]:
+    """D1: (a) consulta de todas as afirmações, depois 1 `consulta site:X` por agência (uma por id,
+    domínio principal, nas AGENTE_SITES_SEPARADOS primeiras), intercaladas por agência: com teto
+    curto, cada afirmação recebe a 1ª agência antes de alguma receber a 2ª."""
+    k = max(0, int(getattr(config, "AGENTE_SITES_SEPARADOS", 3) or 0))
+    escolhidas, ids = [], set()
+    for ag in agencias:
+        site = str(ag.get("site") or ag.get("host") or "").strip().lower()
+        if len(escolhidas) >= k or ag.get("id") in ids or not camada._SITE_VALIDO.match(site):
+            continue
+        ids.add(ag.get("id"))
+        escolhidas.append((ag.get("id") or site, site))
+    a = [(camada._base(al.consulta, "google"), [al.indice], "consulta") for al in alvos]
+    b = []
+    for ag_id, site in escolhidas:
+        for al in alvos:
+            palavras = (al.consulta or "").split()[:camada.MAX_PALAVRAS_CONSULTA_SITES]
+            b.append((camada._base(f"{' '.join(palavras)} site:{site}", "google"), [al.indice], f"agencia {ag_id}"))
     return _agrupar_iguais(a + b)
 
 
