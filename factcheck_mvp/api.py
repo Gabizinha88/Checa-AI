@@ -142,7 +142,7 @@ async def checar(entrada: EntradaConsulta, request: Request):
 
 
 def _render_html(entrada_txt: str, rel: RelatorioChecagem | None = None) -> str:
-    from .agregador import NOMES_ETAPAS, STATUS_ETAPA, direcoes_por_url, postura_legivel
+    from .agregador import NOMES_ETAPAS, STATUS_ETAPA, direcoes_por_url, postura_legivel, rotulo_selo
     from .confiabilidade import ROTULO
     esc = html.escape
     corpo = f"<form method='post' action='/checar-web'>" \
@@ -159,7 +159,7 @@ def _render_html(entrada_txt: str, rel: RelatorioChecagem | None = None) -> str:
             return (f"<div style='border:1px solid #ccc;border-radius:6px;padding:8px;margin:6px 0'>"
                     f"<b>{esc(f.portal_nome or 'web')}</b> "
                     f"<span style='color:{cor.get(post, '#555')}'>{esc(post)}</span>"
-                    f"{' · selo da agência: ' + esc(f.veredito) if f.veredito else ''}"
+                    f"{' · ' + esc(rotulo_selo(f)) if f.veredito else ''}"
                     f" · {'📄 texto lido' if f.corpo_lido else '📰 só manchete'}"
                     f"{' · ' + esc(ROTULO[f.confiabilidade]) if f.confiabilidade in ROTULO else ''}<br/>"
                     f"{esc(f.titulo[:200])}<br/>"

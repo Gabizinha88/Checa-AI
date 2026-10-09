@@ -227,12 +227,12 @@ def formatar(rel: RelatorioChecagem) -> str:
         linhas.append("")
     # Top 2-3 lado a lado: portal | o que a fonte faz | lida ou só manchete | link + citação
     if uteis:
-        from .agregador import direcoes_por_url, postura_legivel
+        from .agregador import direcoes_por_url, postura_legivel, rotulo_selo
         from .confiabilidade import ROTULO
         direcoes = direcoes_por_url(getattr(rel, "decisao", None))
         linhas.append("O que as fontes dizem:")
         for i, f in enumerate(uteis[:3], 1):
-            selo = f" [selo da agência: {f.veredito}]" if f.veredito else ""
+            selo = f" [{rotulo_selo(f)}]" if f.veredito else ""
             corpo = "📄 texto lido" if getattr(f, "corpo_lido", False) else "📰 só manchete"
             nivel = ROTULO.get(getattr(f, "confiabilidade", None) or "")
             linhas.append(f"{i}. {f.portal_nome or 'web'} {postura_legivel(f, direcoes)}{selo} "

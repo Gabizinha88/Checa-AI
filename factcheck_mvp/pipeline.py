@@ -162,6 +162,15 @@ def _overlap(afirmacao: str, titulo: str) -> float:
     return len(ta & tt) / max(1, len(ta))
 
 
+SELO_TITULO_OVERLAP_MIN = 0.6
+
+
+def _mesma_afirmacao(a: str, b: str) -> bool:
+    """Afirmação do título ~ núcleo do usuário (nos dois sentidos). Só decide EXIBIR um selo que
+    não vota, em página que o juiz não viu; nunca decide postura."""
+    return min(_overlap(a, b), _overlap(b, a)) >= SELO_TITULO_OVERLAP_MIN
+
+
 def _veredito_tipado(valor: Optional[str], selo: Optional[str], agencia: Optional[str]) -> Optional[str]:
     """Enum de selos.VEREDITOS: o campo já tipado vale; senão normaliza o selo literal."""
     v = (valor or "").strip().upper()
@@ -232,6 +241,26 @@ class Pipeline:
         p["dominio"] = corroboracao.dominio(p.get("url", ""))
         # Curada > plataforma (rede social/UGC) > institucional > muito acessada (Tranco) > pouco acessada
         p["confiabilidade"] = confiabilidade.classificar(p.get("url", ""), p["curada"])
+        self._selo_do_titulo(p, portal)
+
+    def _selo_do_titulo(self, p: Dict[str, Any], portal: Optional[Dict[str, Any]]) -> None:
+        """D5: resultado de agência curada com selo no título ("É falso que X", "X #boato") guarda o
+        selo em `selo_titulo`, mesmo sem a página lida. Não vira `veredito` (não vota: regra E3);
+        só aparece na fonte se o juiz disser que a página trata da afirmação ou, sem página lida
+        (o juiz não vê), se a afirmação do título for a mesma do usuário (`_mesma_afirmacao`)."""
+        if p.get("veredito") or "web" not in (p.get("origens") or ()) or not p.get("titulo"):
+            return
+        from .serpapi_layer import eh_agencia_checagem
+        if not eh_agencia_checagem(portal, self.catalogo):
+            return
+        from .ingestor import veredito_do_titulo
+        ag = portal.get("id")
+        literal, af_tit = veredito_do_titulo(p["titulo"], ag)
+        v = selos.normalizar(literal, ag) if literal else None
+        if v:
+            p.update(selo_titulo=v, selo_titulo_original=literal, selo_titulo_afirmacao=af_tit)
+            telemetria.evento("fonte", url=p.get("url"), estagio="catalogo", decisao="selo_titulo",
+                              motivo=f"título de agência curada: {literal} -> {v} (não vota)")
 
     async def _buscar_web(self, afs: List[Afirmacao], avisar, etapa, limitacoes
                           ) -> Tuple[List[Dict[str, Any]], Optional["_agente.EstadoBusca"]]:
@@ -1032,17 +1061,29 @@ class Pipeline:
             ai, r = melhor.get(pi, (None, {}))
             classe = r.get("classe")
             corpo = p.get("corpo") or p.get("trecho") or ""
+            # selo do título só se a página trata da afirmação (senão é selo de OUTRO boato)
+            tit = None
+            if p.get("selo_titulo") and not p.get("veredito"):
+                if classe in decisao.CLASSES_TRATA:
+                    tit = p["selo_titulo"]
+                elif classe is None and any(_mesma_afirmacao(afs[a].alvo(), p.get("selo_titulo_afirmacao") or "")
+                         for a in p.get("afs") or () if a < len(afs)):
+                    tit = p["selo_titulo"]
+            veredito = p.get("veredito") or tit
             fontes.append((ordem[classe] if pi in melhor else 4, not bool(p.get("corpo")), not p.get("curada"),
                            FonteEvidencia(
                 url=p["url"], titulo=p.get("titulo") or "", portal_id=p.get("portal_id"),
                 portal_nome=p.get("veiculo") or p.get("dominio") or "",
-                tipo_fonte="veredito" if p.get("veredito") else "corroboracao",
-                veredito=p.get("veredito"), selo_original=p.get("selo_original"),
-                veredito_normalizado=p.get("veredito"),
+                tipo_fonte="veredito" if veredito else "corroboracao",
+                veredito=veredito, selo_original=p.get("selo_original") or (p.get("selo_titulo_original") if tit else None),
+                origem_veredito=p.get("origem_veredito") if p.get("veredito") else ("titulo-busca" if tit else None),
+                afirmacao_checada=p.get("afirmacao_checada") if p.get("veredito") else (
+                    p.get("selo_titulo_afirmacao") if tit else None),
+                veredito_normalizado=veredito,
                 confianca=round(min(1.0, pesos.get(p["url"], 0.0) / decisao.W_VEREDITO), 3) if p["url"] in pesos else None,
                 trecho_corpo=corpo[:500] or None, corpo_lido=bool(p.get("corpo_lido", p.get("corpo"))),
                 data_pub=p.get("data_pub"), quote=(r.get("citacao") or (p.get("snippet") or corpo)[:140] or None),
-                tipo_conteudo="checagem" if (p.get("veredito") or p.get("tipo_portal") == "checagem") else "noticia",
+                tipo_conteudo="checagem" if (veredito or p.get("tipo_portal") == "checagem") else "noticia",
                 relevante=juiz_llm.postura_para_relevante(classe) if pi in melhor else None,
                 postura=classe, citacao=r.get("citacao") or None, citacao_verificada=r.get("citacao_verificada"),
                 motor_juiz=r.get("motor"), cluster=p.get("cluster"), curada=bool(p.get("curada")),

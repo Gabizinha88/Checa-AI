@@ -625,3 +625,41 @@ def test_ler_fatia_crawl_acima_do_cap_por_chamada(amb, monkeypatch):
     assert all(pa == 12 for _, pa in chamadas), chamadas
     assert n_lidas == n_alvo == 36, (n_lidas, n_alvo)
     assert not _sem_fallback_deep_crawl(amb), amb["eventos"]
+
+
+def test_selo_pelo_titulo_de_agencia_curada_aparece_mas_nao_vota(amb):
+    """D5 (decisão a): título "É falso que X" de agência curada traz o selo mesmo sem a página
+    lida; ele aparece na fonte (origem titulo-busca) mas não entra nos vereditos aplicados."""
+    af = _org("https://www.aosfatos.org/noticias/ibuprofeno-dengue-falso/",
+              "É falso que o ibuprofeno cura dengue", "Ibuprofeno não cura dengue, dizem médicos.")
+    blog = _org("https://blogqualquer.net/ibuprofeno-dengue/",
+                "É falso que o ibuprofeno cura dengue", "Ibuprofeno não cura dengue, dizem médicos.")
+    serp = FakeSerp(lambda q: [af] if "site:" in q else [blog])  # nenhuma página lida (403)
+    rel = asyncio.run(_rodar("Ibuprofeno cura dengue", serp))
+    fontes = {f.url: f for f in rel.fontes}
+    f_af, f_blog = fontes[af["link"]], fontes[blog["link"]]
+    assert not f_af.corpo_lido and f_af.postura is None  # página não lida não vai ao juiz
+    assert f_af.afirmacao_checada == "O ibuprofeno cura dengue"
+    assert f_af.veredito == "FALSO" and f_af.origem_veredito == "titulo-busca" and f_af.selo_original == "falso"
+    assert f_blog.veredito is None and f_blog.origem_veredito is None  # não curado: nada
+    dec = [d for t, d in amb["eventos"] if t == "decisao"][-1]
+    assert not dec["decisao"]["vereditos_aplicados"]  # não vota (regra E3)
+    assert any(d.get("decisao") == "selo_titulo" for t, d in amb["eventos"] if t == "fonte")
+
+
+def test_selo_pelo_titulo_de_outro_boato_nao_aparece(amb):
+    outro = _org("https://www.aosfatos.org/noticias/lula-preso-falso/", "É falso que Lula foi preso", "Lula não foi preso.")
+    serp = FakeSerp(lambda q: [outro])
+    rel = asyncio.run(_rodar("Ibuprofeno cura dengue", serp))
+    f = next(f for f in rel.fontes if f.url == outro["link"])
+    assert f.veredito is None and f.origem_veredito is None and f.afirmacao_checada is None
+
+
+def test_rotulo_do_selo_pelo_titulo_diz_a_origem_e_a_afirmacao():
+    from factcheck_mvp.agregador import rotulo_selo
+    from factcheck_mvp.schemas import FonteEvidencia
+    f = FonteEvidencia(url="u", veredito="FALSO", origem_veredito="titulo-busca",
+                       afirmacao_checada="O ibuprofeno cura dengue")
+    assert rotulo_selo(f) == "selo da agência no título: FALSO para “O ibuprofeno cura dengue”"
+    assert rotulo_selo(FonteEvidencia(url="u", veredito="FALSO", origem_veredito="pagina")) == "selo da agência: FALSO"
+    assert rotulo_selo(FonteEvidencia(url="u")) == ""

@@ -94,6 +94,18 @@ def direcoes_por_url(decisao: Optional[Dict[str, Any]]) -> Dict[str, float]:
     return saida
 
 
+def rotulo_selo(fonte: Any) -> str:
+    """Selo da fonte para exibição. O que veio só do título da busca diz isso e para qual
+    afirmação vale (o selo é da afirmação da agência, que pode ter polaridade diferente)."""
+    v = getattr(fonte, "veredito", None)
+    if not v:
+        return ""
+    if getattr(fonte, "origem_veredito", None) == "titulo-busca":
+        ac = (getattr(fonte, "afirmacao_checada", None) or "").strip()
+        return f"selo da agência no título: {v}" + (f" para “{ac[:100]}”" if ac else "")
+    return f"selo da agência: {v}"
+
+
 def postura_legivel(fonte: Any, direcoes: Dict[str, float]) -> str:
     """O que a fonte faz frente ao que o usuário enviou, em linguagem simples."""
     d = direcoes.get(getattr(fonte, "url", ""), 0.0)
