@@ -89,6 +89,7 @@ def amb(monkeypatch):
     async def fake_aprofundar(cands, catalogo, **kw):
         out = {}
         for d in cands:
+            corpos.setdefault("_baixadas", set()).add(d["url"])  # registro p/ testes de "não baixar"
             c = corpos.get(d["url"])
             if c is None:
                 out[d["url"]] = CorpoLido(url=d["url"], erro="HTTP 403")
@@ -509,3 +510,40 @@ def test_regra_de_data_usa_o_texto_do_usuario(amb, monkeypatch):
     assert not any(e.nome == "descoberta" and e.status == "pulada" and "checagem aplicável" in e.detalhe
                    for e in rel.etapas)                                             # e ela NÃO bloqueou a web
     assert chamadas["n"] > 0
+
+
+@pytest.mark.parametrize("url,esperado", [
+    ("https://www.boatos.org/esporte/page/4", "listagem"),
+    ("https://www.boatos.org/page/540", "listagem"),
+    ("https://www.boatos.org/author/kyene-becker/page/32", "listagem"),
+    ("https://www.boatos.org/author/admin?paged=8", "listagem"),
+    ("https://g1.globo.com/tag/vacina/", "listagem"),
+    ("https://www.boatos.org/saude/gatos-morrem-apos-comerem-whiskas.html", None),
+    ("https://g1.globo.com/saude/noticia/2024/01/a.ghtml", None),
+])
+def test_listagem_sai_antes_da_leitura(url, esperado):
+    m = pl._motivo_descarte(url)
+    assert (m is not None and esperado in m) if esperado else m is None
+
+
+@pytest.mark.parametrize("url,legivel", [
+    ("https://www.instagram.com/p/1", False), ("https://m.facebook.com/x/posts/1", False),
+    ("https://www.youtube.com/watch?v=1", False), ("https://www.camara.leg.br/a.pdf", False),
+    ("https://diariodoisgatos.wordpress.com/2012/05/17/fim/", True),   # blog: é lido
+    ("https://medium.com/@x/texto", True), ("https://g1.globo.com/a.ghtml", True),
+])
+def test_ilegivel_nao_e_baixado(url, legivel):
+    assert (pl._nao_legivel(url) is None) == legivel
+
+
+def test_rede_social_listada_sem_baixar_e_listagem_fora(amb):
+    social = {"link": "https://www.instagram.com/p/abc/", "title": "Café cura câncer, diz post",
+              "snippet": "Post viral diz que café cura câncer"}
+    listagem = {"link": "https://www.boatos.org/saude/page/7", "title": "Saúde - página 7",
+                "snippet": "Café cura câncer e outros boatos"}
+    rel = _rodar("Café cura câncer", _prep(amb, TRES_REFUTAM) + [social, listagem])
+    urls = {f.url for f in rel.fontes}
+    assert "https://www.boatos.org/saude/page/7" not in urls          # listagem: fora
+    assert amb.get("_baixadas")                                          # a leitura rodou (guarda anti-vácuo)
+    assert "https://www.instagram.com/p/abc/" not in amb["_baixadas"]   # mas não tentou a rede social
+    assert rel.propensao == "alta"                                      # evidência legível segue decidindo

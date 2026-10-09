@@ -97,6 +97,56 @@ def _eh_homepage(url: str) -> bool:
     return ("/" + path.strip("/").lower()) in _SECOES
 
 
+# Listagem de blog/portal (página N, autor, tag, categoria): não é artigo. Em 07/10 eram as 19
+# "falhas" do Boatos.org (/page/540, /esporte/page/4, /author/kyene-becker/page/32).
+_LISTAGEM_RE = re.compile(r"/(?:page|pagina)/\d+/?$|/(?:author|autor|tag|tags|category|categoria)(?:/|$)", re.I)
+
+
+def _eh_listagem(url: str) -> bool:
+    try:
+        from urllib.parse import urlparse as _up
+        u = _up(url or "")
+    except Exception:
+        return False
+    return bool(_LISTAGEM_RE.search(u.path or "")) or "paged=" in (u.query or "")
+
+
+def _motivo_descarte(url: str) -> Optional[str]:
+    """Antes da leitura: o que não é artigo sai da lista (homepage/seção, listagem)."""
+    if _eh_homepage(url):
+        return "homepage/seção (não é artigo)"
+    if _eh_listagem(url):
+        return "listagem (não é artigo)"
+    return None
+
+
+# Domínios que, nas simulações de 07 e 09/10, nunca entregaram texto (login/JavaScript): 0 corpos
+# em 264 tentativas. Blogs (wordpress.com, blogspot, Medium) NÃO entram: são lidos normalmente.
+_ILEGIVEIS = frozenset("""
+facebook.com instagram.com threads.com threads.net x.com twitter.com tiktok.com kwai.com
+youtube.com youtu.be vimeo.com dailymotion.com twitch.tv rumble.com pinterest.com linkedin.com
+whatsapp.com wa.me t.me telegram.org snapchat.com discord.com bsky.app gettr.com truthsocial.com
+reddit.com quora.com
+""".split())
+
+
+def _nao_legivel(url: str) -> Optional[str]:
+    """Página que a leitura nunca consegue abrir (login/JavaScript ou PDF): não é baixada.
+    Continua na lista de fontes como "não analisada integralmente" (título não vota, E3)."""
+    from .catalogo import dominio_registravel
+    try:
+        from urllib.parse import urlparse as _up
+        u = _up(url or "")
+    except Exception:
+        return None
+    if (u.path or "").lower().endswith(".pdf"):
+        return "PDF (leitura não suportada)"
+    host = (u.hostname or "").lower().removeprefix("www.")
+    if host in _ILEGIVEIS or dominio_registravel(host) in _ILEGIVEIS:
+        return "rede social (exige login ou JavaScript)"
+    return None
+
+
 async def _nada(_: str) -> None:
     return None
 
@@ -331,9 +381,10 @@ class Pipeline:
                               motivo=f"mesma URL canônica de {mantida}")
         _uteis_base = []
         for p in pecas_base:
-            if _eh_homepage(p["url"]):
+            motivo_desc = _motivo_descarte(p["url"])
+            if motivo_desc:
                 telemetria.evento("fonte", url=p["url"], estagio="dedupe", decisao="descartada",
-                                  motivo="homepage/seção (não é artigo)")
+                                  motivo=motivo_desc)
                 continue
             self._catalogar(p)
             _uteis_base.append(p)
@@ -403,9 +454,10 @@ class Pipeline:
                                   motivo=f"mesma URL canônica de {mantida}")
             uteis = []
             for p in pecas:
-                if _eh_homepage(p["url"]):
+                motivo_desc = _motivo_descarte(p["url"])
+                if motivo_desc:
                     telemetria.evento("fonte", url=p["url"], estagio="dedupe", decisao="descartada",
-                                      motivo="homepage/seção (não é artigo)")
+                                      motivo=motivo_desc)
                     continue
                 self._catalogar(p)
                 uteis.append(p)
@@ -583,6 +635,12 @@ class Pipeline:
         for p in pecas:
             if p["url"] not in vistos and not p.get("corpo"):
                 vistos.add(p["url"])
+                motivo_il = _nao_legivel(p["url"])
+                if motivo_il:  # nunca dá texto: não gasta tempo nem requisição
+                    p["motivo_sem_corpo"] = motivo_il
+                    telemetria.evento("fonte", url=p["url"], estagio="deep-crawl", decisao="nao_lida",
+                                      motivo=motivo_il)
+                    continue
                 ai0 = next((ai for ai in sorted(p.get("afs") or {0}) if ai < len(afs)), None)
                 alvo_crawl.append({"url": p["url"], "titulo": p.get("titulo", ""),
                                    "_afirmacao": afs[ai0].alvo() if ai0 is not None and afs else ""})
@@ -837,9 +895,10 @@ class Pipeline:
                         pecas[idx[k]]["afs"] = set(pecas[idx[k]].get("afs") or set()) | set(dnovo["_afirmacoes"])
                         n_somadas += 1
                         continue
-                    if _eh_homepage(dnovo.get("url", "")):
+                    motivo_desc = _motivo_descarte(dnovo.get("url", ""))
+                    if motivo_desc:
                         telemetria.evento("fonte", url=dnovo.get("url"), estagio="dedupe", decisao="descartada",
-                                          motivo="homepage/seção (não é artigo)")
+                                          motivo=motivo_desc)
                         continue
                     p = self._peca_web(dnovo, dnovo["_afirmacoes"])
                     p["url_canonica"] = k
