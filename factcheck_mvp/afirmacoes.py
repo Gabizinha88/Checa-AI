@@ -48,9 +48,37 @@ def _sem_acento(s: str) -> str:
     return unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode()
 
 
+# Moldura de encaminhamento ("Recebi isso no grupo: “X” Alguém sabe se é verdade?"): não faz parte
+# da alegação. Sem tirá-la, "É falso que X" citado não casa a moldura de negação (que exige o
+# início do texto) e o LLM checa X — simulação de 09/10: único falso alarme.
+_INTRO_ENCAMINHADA = re.compile(
+    r"^\s*(?:gente,?\s*|pessoal,?\s*|oi,?\s*)?(?:recebi|me mandaram|me enviaram|me passaram|"
+    r"est[ãa]o (?:compartilhando|mandando|espalhando)|(?:minha|meu) [\wà-ú]+ (?:encaminhou|mandou|postou)|"
+    r"encaminharam|vi (?:um|uma|no|na|isso)|olha (?:isso|o que|só)|circula|t[áa] circulando)"
+    r"[^:“\"]{0,90}:\s*", re.I)
+_CITACAO = re.compile(r"^[“\"](.+?)[”\"]\s*(.*)$", re.S)
+_PERGUNTA_FINAL = re.compile(
+    r"\s*(?:algu[ée]m sabe se (?:é|e) verdade|isso procede|procede|d[áa] pra confiar|é verdade ou (?:é )?fake|"
+    r"é verdade|é real|é fake|isso é verdade|será)\s*\?*\s*$", re.I)
+
+
+def tirar_encaminhamento(texto: str) -> str:
+    """'Recebi isso no grupo: “X” Alguém sabe se é verdade?' -> 'X'. Texto sem moldura volta igual."""
+    t = (texto or "").strip()
+    m = _INTRO_ENCAMINHADA.match(t)
+    if not m:
+        return t
+    resto = t[m.end():].strip()
+    c = _CITACAO.match(resto)
+    if c and (not c.group(2) or _PERGUNTA_FINAL.fullmatch(" " + c.group(2))):
+        return c.group(1).strip()
+    return _PERGUNTA_FINAL.sub("", resto).strip() or t
+
+
 def normalizar_entrada(texto: str) -> str:
-    """CAIXA ALTA → caixa de frase; '!!!'/'???' → um sinal; apelos removidos; espaços colapsados."""
-    t = re.sub(r"\s+", " ", (texto or "")).strip()
+    """Moldura de encaminhamento removida; CAIXA ALTA → caixa de frase; '!!!'/'???' → um sinal;
+    apelos removidos; espaços colapsados."""
+    t = re.sub(r"\s+", " ", tirar_encaminhamento(texto or "")).strip()
     t = re.sub(r"([!?.,;:])[!?.,;:]+", r"\1", t)
     letras = [c for c in t if c.isalpha()]
     if len(letras) >= 8 and sum(c.isupper() for c in letras) / len(letras) >= 0.7:
@@ -141,13 +169,15 @@ Responda SOMENTE com um array JSON, sem texto antes ou depois. Cada item:
 Regras:
 1. "afirmacao": o que o TEXTO afirma, em português, com as palavras do texto, frase autocontida (sem pronomes soltos). Não acrescente fatos. NUNCA traduza para outro idioma. Preserve números e datas exatamente como estão (ex.: "30 mil", "2022").
 2. Negação: se o TEXTO nega uma alegação ("É falso que X", "Não é verdade que X", "X não faz Y"), "afirmacao" mantém a negação, "nucleo" é a alegação X na forma afirmativa (sem a negação) e "polaridade" é "nega". Se não há negação, "nucleo" repete "afirmacao" e "polaridade" é "afirma".
-3. Relato ("Fulano diz que X", "circula vídeo afirmando X") e pergunta ("É verdade que X?"): a afirmação verificável é X.
+3. Fala atribuída a pessoa ou órgão identificado ("Fulano disse que X", "o ministro afirmou que X"): a afirmação verificável é "Fulano disse que X" — mantenha o autor, porque o que se checa é se ele disse. Relato genérico ("circula vídeo afirmando X", "dizem que X") e pergunta ("É verdade que X?"): a afirmação verificável é X.
 4. "consulta": 5 a 8 palavras-chave em português, tiradas do núcleo, para buscar o tema no Google (se o núcleo for curto, use todas as palavras importantes dele). Mantenha os acentos. Não invente termos que não estão no texto. Sem aspas, sem operadores, sem as palavras "falso", "verdade", "boato".
 5. Ignore saudações, apelos ("compartilhe", "urgente") e opiniões. No máximo {n} itens. Se não houver nenhuma afirmação factual, responda [].
 
 Exemplos:
 TEXTO: "É falso que beber água gelada causa gripe"
 [{{"afirmacao": "Beber água gelada não causa gripe", "nucleo": "Beber água gelada causa gripe", "polaridade": "nega", "consulta": "beber água gelada causa gripe"}}]
+TEXTO: "o Sérgio Sacani disse que são os idosos que vão decidir a eleição de 2026"
+[{{"afirmacao": "Sérgio Sacani disse que são os idosos que vão decidir a eleição de 2026", "nucleo": "Sérgio Sacani disse que são os idosos que vão decidir a eleição de 2026", "polaridade": "afirma", "consulta": "Sérgio Sacani idosos decidir eleição 2026"}}]
 TEXTO: "Prefeitura do Recife abriu 30 mil vagas de emprego em 2025"
 [{{"afirmacao": "A Prefeitura do Recife abriu 30 mil vagas de emprego em 2025", "nucleo": "A Prefeitura do Recife abriu 30 mil vagas de emprego em 2025", "polaridade": "afirma", "consulta": "Prefeitura Recife 30 mil vagas emprego 2025"}}]
 
