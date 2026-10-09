@@ -1,0 +1,61 @@
+# Atualização diária da base de checagens (Tarefa 11, F1).
+# Roda o ingestor, passa pela trava do benchmark do índice e abre (ou atualiza) um PR com
+# data/checagens.jsonl.gz. Nada vai para a main sem revisão humana.
+# Pré-requisito no GitHub: Settings > Actions > General > "Allow GitHub Actions to create and
+# approve pull requests". Não usa chave nenhuma (SerpAPI/OpenRouter ficam de fora).
+name: Atualizar base de checagens
+
+on:
+  schedule:
+    - cron: "0 9 * * *"   # 6h em Brasília (UTC-3)
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: atualizar-base
+  cancel-in-progress: false
+
+jobs:
+  atualizar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Dependências (só ingestor e índice)
+        run: pip install curl_cffi lxml nltk rank-bm25 certifi
+
+      - name: Base de antes (para o resumo)
+        run: git show HEAD:factcheck_mvp/data/checagens.jsonl.gz > "$RUNNER_TEMP/antes.jsonl.gz"
+
+      - name: Ingerir (RSS + 5 páginas da API WordPress + até 50 páginas novas de sitemap por agência)
+        run: python -m factcheck_mvp.ingestor --historico 5 --max-sitemap 50
+
+      - name: Reaplicar regras de selo ao que já está na base
+        run: python -m factcheck_mvp.ingestor --reprocessar
+
+      # Falha (sem PR) se recall@3 < 0,75 ou falso positivo > 10%. O motivo mais comum é uma
+      # checagem nova da mesma história de um caso fora_do_indice do eval: exclua-a em
+      # factcheck_mvp/data/checagens_holdout_excluidas.json com motivo_exclusao.
+      - name: Trava - benchmark do índice
+        run: python scripts/bench_indice_checagens.py --gate --verbose | tee "$RUNNER_TEMP/bench.log"
+
+      - name: Resumo do PR
+        run: python scripts/resumo_atualizacao_base.py "$RUNNER_TEMP/antes.jsonl.gz" "$RUNNER_TEMP/bench.log" > "$RUNNER_TEMP/resumo.md"
+
+      - uses: peter-evans/create-pull-request@v7
+        with:
+          branch: base/atualizacao-diaria
+          delete-branch: true
+          add-paths: factcheck_mvp/data/checagens.jsonl.gz
+          commit-message: "Base de checagens: atualização diária"
+          title: "Base de checagens: atualização diária"
+          body-path: ${{ runner.temp }}/resumo.md
+          labels: base-checagens

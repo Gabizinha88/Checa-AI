@@ -390,3 +390,17 @@ def test_titulo_da_pagina():
                                 '<title>Outro | Aos Fatos</title>') == "Montagem simula ‘g1’"
     assert ing.titulo_da_pagina("<title>É falso que X | Aos Fatos</title>") == "É falso que X"
     assert ing.titulo_da_pagina("<p>sem título</p>") == ""
+
+
+def test_resumo_da_atualizacao_diaria():
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    import resumo_atualizacao_base as rb
+    antes = [{"url": "https://a.test/1", "agencia": "lupa", "veredito": "FALSO", "origem": "rss-titulo"}]
+    depois = antes + [{"url": "https://a.test/2", "agencia": "lupa", "veredito": None, "titulo": "Nova", "origem": "rss-titulo"},
+                      {"url": "https://b.test/1", "agencia": "afp-checamos", "veredito": "ENGANOSO", "titulo": "X",
+                       "origem": "claimreview"}]
+    txt = rb.resumo(antes, depois, "limiar padrão {}\n  -> {'recall@3': 0.86, 'taxa_fp': 0.08}\nsem limiar\n  -> {}")
+    assert "**1 → 3 registros** (2 novos)" in txt
+    assert "| lupa | 1 | 2 | 50% |" in txt and "| afp-checamos | 0 | 1 | 100% |" in txt
+    assert "[Nova](https://a.test/2)" in txt and "`{'recall@3': 0.86, 'taxa_fp': 0.08}`" in txt

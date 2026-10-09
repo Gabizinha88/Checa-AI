@@ -1,6 +1,9 @@
 """Mini-benchmark reproduzível do `Indice.buscar_checagens` (sem rede, sem LLM).
 
-Uso: python3 scripts/bench_indice_checagens.py [--grade] [--verbose]
+Uso: python3 scripts/bench_indice_checagens.py [--grade] [--verbose] [--gate]
+
+--gate: sai com código 1 se recall@3 < 0,75 ou falso positivo > 10% (trava da atualização
+diária da base, .github/workflows/atualizar-base.yml; mesmos limites de tests/test_indice_checagens.py).
 
 Conjuntos (todos sobre data/checagens.jsonl.gz atual):
 * POSITIVOS  = casos `no_indice` de eval/casos_claimreview.jsonl (paráfrases escritas à
@@ -60,6 +63,10 @@ NO_INDICE_HISTORICO = [
 ]
 
 
+GATE_RECALL3_MIN = 0.75
+GATE_FP_MAX = 0.10
+
+
 def _casos():
     arq = RAIZ / "eval" / "casos_claimreview.jsonl"
     linhas = [l for l in arq.read_text(encoding="utf-8").splitlines() if l.strip() and not l.startswith("#")]
@@ -96,6 +103,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--grade", action="store_true")
     ap.add_argument("--verbose", action="store_true")
+    ap.add_argument("--gate", action="store_true", help="código 1 se recall@3 < 0,75 ou FP > 10%%")
     a = ap.parse_args(argv)
     idx = Indice.de_checagens()
     casos = _casos()
@@ -113,6 +121,11 @@ def main(argv=None) -> int:
             linhas.append((r["recall@3"], -r["taxa_fp"], r["recall@1"], lim, r))
         for rec3, nfp, rec1, lim, r in sorted(linhas, key=lambda x: (x[1], x[0], x[2]), reverse=True)[:12]:
             print(f"  {lim} -> r@1={r['recall@1']:.2f} r@3={r['recall@3']:.2f} fp={r['taxa_fp']:.2f}")
+    if a.gate and not (res["recall@3"] >= GATE_RECALL3_MIN and res["taxa_fp"] <= GATE_FP_MAX):
+        print(f"GATE FALHOU: recall@3={res['recall@3']:.2f} (mín {GATE_RECALL3_MIN}) "
+              f"FP={res['taxa_fp']:.2%} (máx {GATE_FP_MAX:.0%}). Rode com --verbose: FP de caso "
+              "fora_do_indice costuma ser checagem nova da mesma história (exclua com motivo_exclusao).")
+        return 1
     return 0
 
 
