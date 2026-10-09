@@ -444,9 +444,9 @@ def gravar(dados: Dict[str, Any], pasta: Path) -> Path:
     return pasta
 
 
-def urls_da_base(caminho: Path = RAIZ / "factcheck_mvp" / "data" / "checagens.jsonl") -> set:
-    from factcheck_mvp.ingestor import carregar_jsonl, chave_url
-    return {chave_url(r.get("url", "")) for r in carregar_jsonl(caminho)}
+def urls_da_base(caminho: Optional[Path] = None) -> set:
+    from factcheck_mvp.ingestor import ARQ_CHECAGENS, carregar_jsonl, chave_url
+    return {chave_url(r.get("url", "")) for r in carregar_jsonl(caminho or ARQ_CHECAGENS)}
 
 
 def agora_iso() -> str:

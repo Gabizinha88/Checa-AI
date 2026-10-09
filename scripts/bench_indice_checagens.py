@@ -2,7 +2,7 @@
 
 Uso: python3 scripts/bench_indice_checagens.py [--grade] [--verbose]
 
-Conjuntos (todos sobre data/checagens.jsonl atual):
+Conjuntos (todos sobre data/checagens.jsonl.gz atual):
 * POSITIVOS  = casos `no_indice` de eval/casos_claimreview.jsonl (paráfrases escritas à
   mão; alvo = `urls_checagem`). Mede recall@1 e recall@3.
 * NEGATIVOS  = casos `fora_do_indice` (a checagem e o cluster foram excluídos do índice:

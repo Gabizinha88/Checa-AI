@@ -227,3 +227,27 @@ def test_reprocessar_offline_da_selo_sem_rede(tmp_path):
     assert por["https://b.test/1"]["afirmacao_checada"] == "Água gelada faz mal; causa câncer"
     assert por["https://b.test/2"]["veredito"] == "FALSO" and por["https://b.test/2"]["origem"] == "articlebody"
     assert por["https://b.test/3"]["veredito"] == "ENGANOSO"
+
+
+def test_jsonl_gz_grava_le_e_e_deterministico(tmp_path):
+    """F4: a base versionada é .jsonl.gz; gravar duas vezes o mesmo conteúdo dá os mesmos bytes
+    (gzip com mtime=0), então o PR diário só muda quando a base muda."""
+    from factcheck_mvp.indice import Indice
+    regs = [{"url": "https://ag.test/a/", "titulo": "É falso que X", "afirmacao_checada": "X"},
+            {"url": "https://ag.test/b/", "titulo": "Ação e coração", "afirmacao_checada": "ç"}]
+    arq = tmp_path / "checagens.jsonl.gz"
+    ing.gravar_jsonl(arq, regs)
+    b1 = arq.read_bytes()
+    assert b1[:2] == b"\x1f\x8b" and gzip.decompress(b1).decode("utf-8").count("\n") == 2
+    ing.gravar_jsonl(arq, regs)
+    assert arq.read_bytes() == b1
+    assert ing.carregar_jsonl(arq) == regs
+    assert Indice.de_checagens(arq).checagens == regs
+    plano = tmp_path / "checagens.jsonl"  # .jsonl sem gzip segue funcionando
+    ing.gravar_jsonl(plano, regs)
+    assert ing.carregar_jsonl(plano) == regs and Indice.de_checagens(plano).checagens == regs
+
+
+def test_base_padrao_e_gz():
+    from factcheck_mvp import indice
+    assert ing.ARQ_CHECAGENS.name == "checagens.jsonl.gz" == indice.ARQ_CHECAGENS.name

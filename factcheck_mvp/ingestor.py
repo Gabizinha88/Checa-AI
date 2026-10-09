@@ -1,4 +1,4 @@
-"""Ingestor de checagens: RSS/Atom (+ WP REST) das agências -> data/checagens.jsonl.
+"""Ingestor de checagens: RSS/Atom (+ WP REST) das agências -> data/checagens.jsonl.gz.
 
 Substitui o br_news_crawler como fonte do índice de vereditos (achado A1 da
 revisão: o índice antigo tinha 17 docs, todos homepages/menus). Usa só os
@@ -24,6 +24,7 @@ URLs listadas em data/checagens_holdout_excluidas.json nunca entram (eval
 from __future__ import annotations
 
 import argparse
+import gzip
 import html as _html
 import json
 import re
@@ -42,7 +43,7 @@ from urllib.parse import quote, unquote, urljoin, urlsplit, urlunsplit
 from . import jsonld, selos
 
 BASE_DIR = Path(__file__).resolve().parent
-ARQ_CHECAGENS = BASE_DIR / "data" / "checagens.jsonl"
+ARQ_CHECAGENS = BASE_DIR / "data" / "checagens.jsonl.gz"  # .gz versionado (F4); .jsonl também é lido
 ARQ_EXCLUIDAS = BASE_DIR / "data" / "checagens_holdout_excluidas.json"
 ARQ_CATALOGO = BASE_DIR / "data" / "catalogo.json"
 
@@ -558,11 +559,17 @@ def montar_registro(item: Dict[str, Any], agencia: str, html_pagina: Optional[st
 
 
 # ----------------------------------------------------------------------------- persistência
+def _ler_texto(caminho: Path) -> str:
+    """Conteúdo de .jsonl ou .jsonl.gz (pelo sufixo)."""
+    dados = caminho.read_bytes()
+    return (gzip.decompress(dados) if caminho.suffix == ".gz" else dados).decode("utf-8")
+
+
 def carregar_jsonl(caminho: Path) -> List[Dict[str, Any]]:
     if not caminho.exists():
         return []
     saida = []
-    for linha in caminho.read_text(encoding="utf-8").splitlines():
+    for linha in _ler_texto(caminho).splitlines():
         linha = linha.strip()
         if linha:
             try:
@@ -611,9 +618,10 @@ def mesclar(existentes: List[Dict[str, Any]], novos: List[Dict[str, Any]],
 def gravar_jsonl(caminho: Path, registros: List[Dict[str, Any]]) -> None:
     caminho.parent.mkdir(parents=True, exist_ok=True)
     tmp = caminho.with_suffix(caminho.suffix + ".tmp")
-    with tmp.open("w", encoding="utf-8") as f:
-        for r in registros:
-            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    dados = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in registros).encode("utf-8")
+    if caminho.suffix == ".gz":  # mtime=0: mesmo conteúdo -> mesmos bytes (sem diff falso no git)
+        dados = gzip.compress(dados, compresslevel=9, mtime=0)
+    tmp.write_bytes(dados)
     tmp.replace(caminho)
 
 
@@ -812,11 +820,11 @@ def reprocessar(caminho: Optional[Path] = None, log=print) -> Dict[str, int]:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    ap = argparse.ArgumentParser(description="Ingere checagens (RSS + JSON-LD ClaimReview) em data/checagens.jsonl")
+    ap = argparse.ArgumentParser(description="Ingere checagens (RSS + JSON-LD ClaimReview) em data/checagens.jsonl.gz")
     ap.add_argument("--max-por-feed", type=int, default=100, help="teto de itens por feed/página de feed")
     ap.add_argument("--sem-paginas", action="store_true", help="não baixa a página do artigo (sem ClaimReview)")
     ap.add_argument("--paginas-feed", type=int, default=3, help="páginas (?paged=N) nos feeds WordPress")
-    ap.add_argument("--saida", type=Path, default=None, help="padrão: data/checagens.jsonl")
+    ap.add_argument("--saida", type=Path, default=None, help="padrão: data/checagens.jsonl.gz (.jsonl sem gzip também serve)")
     ap.add_argument("--historico", type=int, default=None,
                     help="páginas da API WordPress (50 posts cada) para buscar o histórico; padrão = --paginas-feed")
     ap.add_argument("--agencias", default="", help="só estas agências (ids separados por vírgula)")
