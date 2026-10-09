@@ -30,6 +30,7 @@ def _int(name: str, default: int) -> int:
 
 TELEGRAM_TOKEN = _get("TELEGRAM_TOKEN")
 SERPAPI_KEY = _get("SERPAPI_KEY")
+SERPAPI_TIMEOUT_S = _int("SERPAPI_TIMEOUT_S", 15)  # por tentativa; timeout/conexão ganha 1 nova tentativa
 OPENROUTER_API_KEY = _get("OPENROUTER_API_KEY")
 OPENROUTER_MODEL = _get("OPENROUTER_MODEL", "deepseek/deepseek-v4-flash")
 OPENROUTER_FALLBACK_MODEL = _get("OPENROUTER_FALLBACK_MODEL", "google/gemma-4-26b-a4b-it:free")

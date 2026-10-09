@@ -26,6 +26,16 @@ from .catalogo import Catalogo
 log = logging.getLogger("factcheck.serpapi")
 
 ENGINES = ("google", "google_news", "google_scholar")
+SERPAPI_ESPERA_NOVA_TENTATIVA_S = 1.5
+
+
+def _eh_falha_de_rede(e: Exception) -> bool:
+    """Timeout ou conexão caída (httpx, curl_cffi ou o que vier do replay) — não erro HTTP."""
+    if isinstance(e, (replay.CotaSerpAPIEsgotada, replay.OrcamentoSerpAPIEsgotado)):
+        return False
+    t = f"{type(e).__name__} {e}".lower()
+    return any(m in t for m in ("timeout", "timed out", "curl: (28)", "curl: (7)", "connecterror",
+                                "connection reset", "connection refused"))
 RESULT_KEY = {"google_news": "news_results", "google": "organic_results",
               "google_scholar": "organic_results"}
 
@@ -245,12 +255,13 @@ class ResultadoBusca:
 
 
 class SerpAPIClient:
-    def __init__(self, api_key: str | None = None, ttl: int | None = None, timeout: int = 25,
+    def __init__(self, api_key: str | None = None, ttl: int | None = None, timeout: int | None = None,
                  cache_max: int = 200, engine: str | None = None):
         # None = usa env; "" explícito = força desligado (testes offline)
         self.api_key = config.SERPAPI_KEY if api_key is None else api_key
         self.ttl = config.CACHE_SERPAPI_TTL if ttl is None else ttl
-        self.timeout = timeout
+        # 15 s por tentativa (era 25 s numa só): duas tentativas cabem no mesmo tempo total.
+        self.timeout = timeout if timeout is not None else (getattr(config, "SERPAPI_TIMEOUT_S", 15) or 15)
         self.engine_default = (engine or getattr(config, "SERP_ENGINE", "google_news")
                                or "google_news")
         if self.engine_default not in ENGINES:
@@ -288,6 +299,20 @@ class SerpAPIClient:
     def _chave(self, params: Dict[str, Any]) -> str:
         return "|".join(f"{k}={params.get(k)}" for k in ("engine", "q", "hl", "gl", "num"))
 
+    def _get_com_nova_tentativa(self, params_http: Dict[str, Any]):
+        """GET na SerpAPI com UMA nova tentativa só para timeout/queda de conexão (na simulação
+        de 09/10, 17 de 50 checagens perderam uma busca por timeout de 25 s). Erro HTTP (cota,
+        chave, 4xx/5xx) não é repetido: sobe como antes."""
+        for tentativa in (1, 2):
+            try:
+                return replay.http_get("https://serpapi.com/search.json", params=params_http,
+                                       timeout=self.timeout)
+            except Exception as e:
+                if tentativa == 2 or not _eh_falha_de_rede(e):
+                    raise
+                telemetria.fallback("serpapi", f"{type(e).__name__} (timeout/conexão): nova tentativa")
+                time.sleep(SERPAPI_ESPERA_NOVA_TENTATIVA_S)
+
     def buscar(self, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Retorna o JSON bruto ou None (sem chave, timeout, erro). Nunca levanta."""
         return self.buscar_ex(params).payload
@@ -323,11 +348,8 @@ class SerpAPIClient:
         try:
             corpo = dict(params)
             corpo.pop("engine", None)  # motor vai explícito (override por query)
-            r = replay.http_get(
-                "https://serpapi.com/search.json",
-                params={"engine": self.engine_de(params), "api_key": self.api_key, **corpo},
-                timeout=self.timeout,
-            )
+            r = self._get_com_nova_tentativa(
+                {"engine": self.engine_de(params), "api_key": self.api_key, **corpo})
             r.raise_for_status()
             payload = r.json()
             tem = bool((payload or {}).get(self.result_key(params))
