@@ -468,3 +468,44 @@ def test_checagem_antiga_para_fato_de_hoje_nao_pula_web(amb, monkeypatch):
     # Guarda anti-vácuo: a base precisa ter devolvido a checagem antiga (o gate barra pela data)
     assert any(e.nome == "base-checagem" and e.status == "ok" for e in rel.etapas)
     assert not any(e.nome == "descoberta" and e.status == "pulada" and "checagem aplicável" in e.detalhe for e in rel.etapas)
+
+
+def test_regra_de_data_usa_o_texto_do_usuario(amb, monkeypatch):
+    """Regressão da simulação de 09/10 (0/5 nos casos de data): o LLM de afirmações descarta
+    "Hoje," — a regra de data precisa olhar o texto ORIGINAL do usuário, senão a checagem de 2018
+    vira aplicável, a web é pulada e o fato antigo sai como 'baixa'."""
+    monkeypatch.setenv("INDICE_CHECAGENS", "1")
+    juiz = _juiz_falso()
+
+    def llm_tira_hoje(messages, max_tokens, timeout_s, finalidade):
+        if finalidade == "afirmacoes":
+            texto = messages[-1]["content"].split('"""')[1].strip()
+            nuc = re.sub(r"(?i)^hoje,\s*", "", texto)
+            nuc = nuc[0].upper() + nuc[1:]
+            return json.dumps([{"afirmacao": nuc, "nucleo": nuc, "polaridade": "afirma",
+                                "consulta": nuc.lower()}]), "fake"
+        return juiz(messages, max_tokens, timeout_s, finalidade)
+    monkeypatch.setattr(llm, "_local", llm_tira_hoje)
+    url = "https://www.agencialupa.org/jornalismo/2018/11/19/verificamos-medicos-estrangeiros/"
+    alvo = "Bolsonaro quis impedir familiares de médicos estrangeiros de trabalhar no Brasil"
+    idx = Indice.de_checagens([{"url": url, "titulo": f"É verdade que {alvo}", "afirmacao_checada": alvo,
+                                "selo_original": "verdade", "veredito": "VERDADEIRO", "agencia": "lupa",
+                                "data_pub": "2018-11-19", "trecho": f"A Lupa confirma: {alvo}."}]
+                              + [{"url": f"https://lupa.uol.com.br/z{i}", "titulo": t, "afirmacao_checada": t,
+                                  "selo_original": "Falso", "veredito": "FALSO", "agencia": "lupa", "trecho": t}
+                                 for i, t in enumerate(["Vacina altera o DNA humano", "Urnas foram fraudadas em 2022",
+                                                        "Limão em jejum cura diabetes", "Governo vai confiscar poupança",
+                                                        "Água gelada causa gripe"])])
+    amb[url] = f"A Lupa confirma: {alvo}. " * 40
+    chamadas = {"n": 0}
+
+    class Contadora(FakeSerp):
+        def buscar(self, q):
+            chamadas["n"] += 1
+            return super().buscar(q)
+    rel = asyncio.run(Pipeline(Catalogo.carregar(), idx, Indice(), serpapi=Contadora([]), detector=MockDetector())
+                      .executar(EntradaConsulta(tipo="texto", conteudo=f"Hoje, {alvo}")))
+    assert any(e.nome == "base-checagem" and e.status == "ok" for e in rel.etapas)  # a base achou a checagem
+    assert not any(e.nome == "descoberta" and e.status == "pulada" and "checagem aplicável" in e.detalhe
+                   for e in rel.etapas)                                             # e ela NÃO bloqueou a web
+    assert chamadas["n"] > 0

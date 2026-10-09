@@ -340,7 +340,8 @@ class Pipeline:
         pecas_base = _uteis_base
 
         # 3c. Fase base: julga só a base e testa aplicabilidade (gate E1)
-        julg_base, houve_aplicavel = await self._fase_base(afs, pecas_base, usar_llm, avisar)
+        julg_base, houve_aplicavel = await self._fase_base(afs, pecas_base, usar_llm, avisar,
+                                                           texto_usuario=texto_base)
 
         # Gate (E1): checagem aplicável na base → pula web e ondas extras.
         # Telemetria do gate é evento("etapa"), nunca fallback. Com SERPAPI_KEY ausente
@@ -524,13 +525,14 @@ class Pipeline:
 
     # ------------------------------------------------------------------ seleção / juiz
     async def _fase_base(self, afs: List[Afirmacao], pecas_base: List[Dict[str, Any]],
-                         usar_llm: bool = True, avisar=None
+                         usar_llm: bool = True, avisar=None, texto_usuario: str = ""
                          ) -> Tuple[Dict[Tuple[int, int], Dict[str, Any]], bool]:
         """Fase base (E1): seleciona/lê/julga SÓ a base e testa aplicabilidade.
 
         Para cada par (peça, afirmação) chama
         `aplicabilidade.e_aplicavel(classe, citacao_verificada, corpo_lido, veredito,
-        afs[ai].texto, data_pub)` e emite `telemetria.evento("fonte",
+        texto, data_pub)`, com `texto` = afirmação + texto ORIGINAL do usuário: o LLM de
+        afirmações descarta "hoje/agora/ontem", e a regra de data precisa vê-los e emite `telemetria.evento("fonte",
         estagio="aplicabilidade", decisao=...)` por decisão. O gate (pular a web) é
         evento("etapa"), nunca fallback — fallback só em erro real.
 
@@ -551,7 +553,7 @@ class Pipeline:
             p = pecas_base[pi]
             aplicavel, motivo = aplicabilidade.e_aplicavel(
                 r.get("classe"), r.get("citacao_verificada"), bool(p.get("corpo")),
-                p.get("veredito"), afs[ai].texto, p.get("data_pub"))
+                p.get("veredito"), f"{afs[ai].texto} {texto_usuario}".strip(), p.get("data_pub"))
             telemetria.evento("fonte", url=p.get("url"), estagio="aplicabilidade",
                               decisao="aplicavel" if aplicavel else "inaplicavel",
                               motivo=motivo, afirmacao=ai, classe=r.get("classe"),
