@@ -313,3 +313,80 @@ def test_podar_cancela_com_lista_incompleta(monkeypatch):
     finally:
         b.fechar()
     assert ficam == regs and saem == []
+
+
+def _urlset(urls):
+    return ('<?xml version="1.0"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+            + "".join(f"<url><loc>{u}</loc><lastmod>{d}</lastmod></url>" for u, d in urls) + "</urlset>").encode()
+
+
+def _indice_sm(filhos):
+    return ('<?xml version="1.0"?><sitemapindex>' + "".join(f"<sitemap><loc>{u}</loc></sitemap>" for u in filhos)
+            + "</sitemapindex>").encode()
+
+
+def test_parse_sitemap_urlset_e_indice():
+    tipo, itens = ing.parse_sitemap(_urlset([("https://ag.test/a", "2026-10-08"), ("https://ag.test/b", "2024-01-02T10:00Z")]))
+    assert tipo == "urlset" and itens == [("https://ag.test/a", "2026-10-08"), ("https://ag.test/b", "2024-01-02")]
+    tipo, itens = ing.parse_sitemap(_indice_sm(["https://ag.test/s1.xml"]))
+    assert tipo == "indice" and itens == [("https://ag.test/s1.xml", None)]
+    assert ing.parse_sitemap(b"<html>nada</html>") == ("", [])
+
+
+def test_coletar_do_sitemap_filtra_pula_conhecidas_e_respeita_teto(monkeypatch):
+    paginas = {
+        "https://ag.test/sitemap.xml": _indice_sm(["https://ag.test/sm-answer.202610.xml", "https://ag.test/sm-tags.xml",
+                                                   "https://ag.test/sm-answer.202609.xml", "https://ag.test/sm-answer.202608.xml"]),
+        "https://ag.test/sm-answer.202610.xml": _urlset([("https://ag.test/checagem/a", "2026-10-08"),
+                                                        ("https://ag.test/sobre", "2026-10-08"),
+                                                        ("https://ag.test/checagem/b", "2026-10-07")]),
+        "https://ag.test/sm-answer.202609.xml": _urlset([("https://ag.test/checagem/c", "2026-09-30"),
+                                                        ("https://ag.test/checagem/d", "2026-09-29")]),
+    }
+    pedidas = []
+
+    def baixar(self, url):
+        pedidas.append(url)
+        return (200, paginas[url], url) if url in paginas else (404, b"", url)
+    monkeypatch.setattr(ing.Baixador, "baixar", baixar)
+    fonte = {"agencia": "ag", "feeds": [], "sitemaps": ["https://ag.test/sitemap.xml"],
+             "sitemap_filhos": r"sm-answer\.", "sitemap_urls": r"/checagem/"}
+    b = ing.Baixador()
+    try:
+        its = ing.coletar_itens(b, fonte, 100, 1, [], None, ja_na_base={ing.chave_url("https://ag.test/checagem/b")},
+                                max_sitemap=2)
+    finally:
+        b.fechar()
+    assert [i["link"] for i in its] == ["https://ag.test/checagem/a", "https://ag.test/checagem/c"]
+    assert its[0]["data"] == "2026-10-08" and its[0]["_sitemap"] is True and its[0]["titulo"] == ""
+    assert "https://ag.test/sm-tags.xml" not in pedidas            # filho fora do filtro
+    assert "https://ag.test/sm-answer.202608.xml" not in pedidas   # teto atingido: para de ler
+
+
+def test_sitemap_so_entra_com_selo(monkeypatch, tmp_path):
+    cr = ('<html><head><script type="application/ld+json">{"@type":"ClaimReview","claimReviewed":"X fez Y",'
+          '"reviewRating":{"alternateName":"Falso"},"headline":"Checagem X"}</script></head></html>')
+    paginas = {"https://ag.test/sm.xml": _urlset([("https://ag.test/c/1", "2026-10-08"), ("https://ag.test/c/2", "2026-10-08")]),
+               "https://ag.test/c/1": cr.encode(), "https://ag.test/c/2": b"<html><h1>Reportagem</h1></html>"}
+    monkeypatch.setattr(ing.Baixador, "baixar", lambda self, url: (200, paginas[url], url) if url in paginas else (404, b"", url))
+    fonte = {"agencia": "ag", "feeds": [], "sitemaps": ["https://ag.test/sm.xml"]}
+    b = ing.Baixador()
+    try:
+        regs = ing.processar_fonte(b, fonte, 100, 1, False, set(), [], log=lambda *a: None)
+        assert [r["url"] for r in regs] == ["https://ag.test/c/1"] and regs[0]["veredito"] == "FALSO"
+        assert ing.processar_fonte(b, fonte, 100, 1, True, set(), [], log=lambda *a: None) == []  # --sem-paginas: nada
+    finally:
+        b.fechar()
+
+
+def test_fontes_com_sitemap():
+    por = {f["agencia"]: f for f in ing.FONTES}
+    for ag in ("aos-fatos", "comprova", "afp-checamos", "uol-confere"):
+        assert por[ag].get("sitemaps"), ag
+
+
+def test_titulo_da_pagina():
+    assert ing.titulo_da_pagina('<meta property="og:title" content="Montagem simula &#8216;g1&#8217;"/>'
+                                '<title>Outro | Aos Fatos</title>') == "Montagem simula ‘g1’"
+    assert ing.titulo_da_pagina("<title>É falso que X | Aos Fatos</title>") == "É falso que X"
+    assert ing.titulo_da_pagina("<p>sem título</p>") == ""

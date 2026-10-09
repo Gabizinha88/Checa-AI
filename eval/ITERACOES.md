@@ -222,3 +222,22 @@ Branch `feat/e1-base-primeiro`. Docs/metrificação, sem mudança de código de 
   `test_checagem_antiga_para_fato_de_hoje_nao_pula_web`). Sem run_ids novos de trace:
   nenhum `eval.run`/CLI `checar` foi executado nesta task (sem cassetes); os run_ids no
   snapshot (`20260930-...`) são dos traces antigos reutilizados.
+
+## 2026-10-09 — Fases D–F: base de checagens (Tarefas 9, 10, 12)
+
+- Hipótese: Aos Fatos, Comprova, AFP e UOL quase não estavam na base (12, 20, 0 e 0 registros)
+  porque não têm API do WordPress e os RSS da AFP/UOL davam 404. O sitemap de cada um lista as
+  checagens; baixando a página, o ClaimReview traz o selo.
+- Mudança: leitor de sitemap no ingestor (só entra página com selo; teto de 150 páginas novas por
+  agência e execução, 1 req/s por site); base passa a `data/checagens.jsonl.gz`; Lupa só com
+  categorias de checagem na ingestão (a poda da base atual foi medida e **não** aplicada: recall@3
+  0,86 → 0,82, FP igual).
+- Higiene do holdout: o sitemap trouxe 15 checagens da **mesma história** de casos `fora_do_indice`
+  (Aos Fatos e UOL: Janja "nem Deus tira", Lula/Janja R$ 7 bi, hackers nas urnas, filha de Lula
+  presa etc.). Sem exclusão, o benchmark marcava 16 falsos positivos (21%) em vez de 6. Foram para
+  `data/checagens_holdout_excluidas.json` com `motivo_exclusao`, igual ao backfill de 07/10. Nenhum
+  caso, rótulo ou `esperado` foi alterado.
+- Bench índice depois: recall@1 0,77 → 0,68 (2 casos em que outra agência checou a mesma
+  afirmação com o mesmo selo e ficou em 1º: `cr_estribo_caminhao_lixo`, `cr_china_acai_amapa`),
+  recall@3 0,86 (igual), FP 7,9% (igual). Base: 21.579 → 21.976 registros.
+- Sem eval.run (sem cassetes) e sem custo de SerpAPI/LLM.
