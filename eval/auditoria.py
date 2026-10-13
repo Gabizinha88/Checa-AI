@@ -162,6 +162,18 @@ def resumir_run(pasta: Path, esperado: Optional[str] = None, frase: Optional[str
     return "\n".join(out) + "\n"
 
 
+def _texto(frase: Any) -> Optional[str]:
+    return frase.get("texto") if isinstance(frase, dict) else frase
+
+
+def _gabarito(caso: Dict[str, Any]) -> str:
+    """Linha de gabarito de um caso de scripts/simular_usuario.py (`frase` é o dict sorteado)."""
+    f = caso.get("frase") if isinstance(caso.get("frase"), dict) else {}
+    return (f"{f.get('id', '?')} | categoria={f.get('categoria')} | rótulo={f.get('rotulo')} | "
+            f"nota={f.get('nota')!r} | checagem de origem={f.get('url_checagem')} (data {f.get('data')}) | "
+            f"o sistema respondeu: {caso.get('nivel')} (p={caso.get('prob')}) = {caso.get('resultado')}")
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("run_ids", nargs="*", help="ids em runs/ (ou caminhos de pasta)")
@@ -173,7 +185,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if a.simulacao:
         for c in json.loads(a.simulacao.read_text(encoding="utf-8"))["casos"]:
             if c.get("run_id"):
-                alvos.append((c["run_id"], c.get("esperado") or c.get("categoria"), c.get("frase")))
+                alvos.append((c["run_id"], _gabarito(c), _texto(c.get("frase"))))
     alvos += [(r, None, None) for r in a.run_ids]
     if not alvos:
         ap.error("informe run_ids ou --simulacao")

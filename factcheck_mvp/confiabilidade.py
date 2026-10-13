@@ -21,6 +21,7 @@ import gzip
 import json
 import logging
 import threading
+from functools import lru_cache
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -124,6 +125,28 @@ def classificar(url: str, curada: bool = False) -> str:
     if pos is not None and pos <= (config.TRAFEGO_RANK_MAX or 200_000):
         return ALTO_TRAFEGO
     return BAIXO_TRAFEGO
+
+
+@lru_cache(maxsize=1)
+def _catalogo_padrao():
+    """Catálogo em disco, lido uma vez (só para identificar agências quando o item não traz a marca)."""
+    from .catalogo import Catalogo
+    try:
+        return Catalogo.carregar()
+    except RuntimeError as e:
+        log.warning("catálogo indisponível para identificar agências: %s", e)
+        return None
+
+
+def eh_agencia_checagem(url: str) -> bool:
+    """B4: a URL é de uma agência de checagem CURADA (catálogo `tipo=checagem`, status curado).
+    Agências jornalísticas de checagem cruzada de fatos são confiáveis por natureza (decisão da usuária,
+    13/10): a postura REFUTA delas pesa como um selo. Candidato descoberto automaticamente não conta."""
+    cat = _catalogo_padrao()
+    if cat is None:
+        return False
+    portal = cat.por_url(url or "")
+    return bool(portal) and cat.eh_curado(portal) and (portal.get("tipo") == "checagem")
 
 
 def metadados() -> Dict[str, object]:

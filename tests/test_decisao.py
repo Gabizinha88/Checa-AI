@@ -216,8 +216,8 @@ def test_mutacao_inverter_direcao_quebra_as_expectativas(monkeypatch):
     assert all(decidir(f()).nivel == esp for f, esp in CASOS)
     original = decisao._contribuicoes
 
-    def invertida(it, s, dec):
-        return [(-v, d) for v, d in original(it, s, dec)]
+    def invertida(it, s, dec, *args):
+        return [(-v, d) for v, d in original(it, s, dec, *args)]
     monkeypatch.setattr(decisao, "_contribuicoes", invertida)
     assert all(decidir(f()).nivel != esp for f, esp in CASOS)
 
@@ -694,13 +694,14 @@ def test_t6_sem_bert_identico_ao_comportamento_anterior():
 def test_t6_selo_de_pagina_sem_indice_nao_vota():
     """Selo ClaimReview extraído da PÁGINA (template/JSON-LD do portal) não entra em
     vereditos_aplicados: vai para vereditos_ignorados, não gera conflito e a postura segue
-    votando sozinha."""
+    votando sozinha. B4/R1 (13/10): a Lupa é agência de checagem curada, então a postura REFUTA dela
+    pesa como um selo (1,5), não 1,0."""
     it = _it("https://lupa.uol.com.br/x", "REFUTA", veredito="FALSO", origem="pagina")
     d = decidir(_ev([it]))
     assert not d.vereditos_aplicados and not d.conflitos
     assert [v["veredito"] for v in d.vereditos_ignorados] == ["FALSO"]
     assert "não vota" in d.vereditos_ignorados[0]["motivo"]
-    assert [v.motivo for v in d.votos] == ["postura REFUTA"] and d.log_odds == 1.0
+    assert [v.motivo for v in d.votos] == ["postura REFUTA (agência)"] and d.log_odds == 1.5
 
 
 def test_t6_selo_de_pagina_contra_postura_nao_gera_conflito():

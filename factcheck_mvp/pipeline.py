@@ -582,6 +582,7 @@ class Pipeline:
                 url=p["url"], afirmacao=ai, cluster=p.get("cluster") or p["url"], classe=r.get("classe"),
                 motor=r.get("motor") or "", citacao_verificada=r.get("citacao_verificada"),
                 curada=bool(p.get("curada")), corpo_lido=bool(p.get("corpo_lido", p.get("corpo"))),
+                agencia=bool(p.get("curada")) and p.get("tipo_portal") == "checagem",
                 veredito=p.get("veredito"),
                 origem_veredito=p.get("origem_veredito"), veiculo=p.get("veiculo") or p.get("dominio") or "",
                 confiabilidade=p.get("confiabilidade"), data_pub=p.get("data_pub"),
