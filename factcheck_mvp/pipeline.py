@@ -1070,7 +1070,11 @@ class Pipeline:
         except Exception as e:
             etapa("modelo", "falha", str(e)[:200])
         try:
-            pads = await asyncio.to_thread(padroes_llm.analisar_padroes, texto_base[:5000], usar_llm)
+            # Auditoria de 13/10: a chamada LLM de padrões não decide nada ("fora do nível") e, nas 29 saídas
+            # revisadas, marcou "fonte_vaga" na moldura de entrega ("me mandaram…") em 24. Por padrão só o
+            # detector regex roda; PADROES_LLM=1 religa o LLM.
+            pads = await asyncio.to_thread(padroes_llm.analisar_padroes, texto_base[:5000],
+                                           usar_llm and config.PADROES_LLM)
             if pads["padroes"]:
                 nomes = ", ".join(p["padrao"] for p in pads["padroes"][:5])
                 sinais.append(SinalAnalise(motor="llm-padroes",

@@ -38,6 +38,8 @@ OPENROUTER_MODEL_JUIZ = _get("OPENROUTER_MODEL_JUIZ")  # vazio = mesmo modelo do
 # Lista separada por vírgula; vazio = roteamento padrão da OpenRouter.
 OPENROUTER_PROVIDER_ORDER = _get("OPENROUTER_PROVIDER_ORDER", "StreamLake")
 OPENROUTER_TIMEOUT_S = _int("OPENROUTER_TIMEOUT_S", 30)
+# Padrões de linguagem via LLM (sinal de estilo, fora do nível). Desligado por padrão desde a auditoria de 13/10.
+PADROES_LLM = os.getenv("PADROES_LLM", "0").strip().lower() in ("1", "true", "on", "sim", "yes")
 OPENROUTER_MAX_TOKENS = _int("OPENROUTER_MAX_TOKENS", 600)
 # TypeSafe Jev (Decisions API): 1 request = 3 noul (~centenas de ms).
 # Uso restrito à classificação de schema (descoberta_site); o julgamento de
