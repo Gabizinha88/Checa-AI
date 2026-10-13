@@ -65,6 +65,36 @@ class Alvo:
     consulta: str
 
 
+def motor_busca() -> str:
+    """Motor das consultas do agente: `SERP_ENGINE` (`google` = padrão; `google_news` = Google News)."""
+    m = str(getattr(config, "SERP_ENGINE", "google") or "google").strip().lower()
+    return "google_news" if m == "google_news" else "google"
+
+
+def com_motor(q: Dict[str, Any]) -> Dict[str, Any]:
+    """Aplica o motor configurado a uma consulta montada para o Google orgânico. No Google News o
+    parâmetro `num` não existe (o motor devolve o que tem) e o `engine` da consulta muda."""
+    if motor_busca() != "google_news":
+        return q
+    novo = {k: v for k, v in q.items() if k != "num"}
+    novo["engine"] = "google_news"
+    return novo
+
+
+def _itens_news(payload: Optional[Dict[str, Any]], chave: str) -> List[Dict[str, Any]]:
+    """`news_results` do Google News: um item pode ser um grupo (`stories`) sem link próprio; as histórias
+    do grupo entram no lugar dele, na mesma ordem."""
+    out: List[Dict[str, Any]] = []
+    for it in ((payload or {}).get(chave) or []):
+        if not isinstance(it, dict):
+            continue
+        historias = [h for h in (it.get("stories") or []) if isinstance(h, dict)]
+        if it.get("link"):
+            out.append(it)
+        out.extend(historias)
+    return out
+
+
 def consulta_padrao(texto: str) -> str:
     """Fallback da consulta: termos de conteúdo do núcleo (mesma regra do fallback de afirmações)."""
     from .afirmacoes import palavras_chave
@@ -133,7 +163,8 @@ class EstadoBusca:
         """Normaliza os resultados de 1 busca para a afirmação `ai`. -> (n resultados, n novos p/ `ai`)."""
         engine = str(q.get("engine") or "google")
         chave = camada.RESULT_KEY.get(engine, "organic_results")
-        itens = [(it, False) for it in ((payload or {}).get(chave) or [])[:ORGANICOS_POR_BUSCA]]
+        brutos = _itens_news(payload, chave) if engine == "google_news" else ((payload or {}).get(chave) or [])
+        itens = [(it, False) for it in brutos[:ORGANICOS_POR_BUSCA]]
         if engine == "google":
             itens += [(it, True) for it in ((payload or {}).get("top_stories") or [])[:TOP_STORIES_POR_BUSCA]]
         n, novos = 0, 0
@@ -290,10 +321,10 @@ def plano_onda1(alvos: Sequence[Alvo], agencias: Optional[List[Dict[str, Any]]] 
     agencias = agencias if agencias is not None else camada.agencias_checagem()
     a, b = [], []
     for al in alvos:
-        a.append((camada._base(al.consulta, "google"), [al.indice], "consulta"))
+        a.append((com_motor(camada._base(al.consulta, "google")), [al.indice], "consulta"))
         q_ag, fora = camada.query_agencias(al.consulta, agencias)
         if "site:" in q_ag["q"]:
-            b.append((q_ag, [al.indice], "agencias" + (f" (-{len(fora)} fora do limite)" if fora else "")))
+            b.append((com_motor(q_ag), [al.indice], "agencias" + (f" (-{len(fora)} fora do limite)" if fora else "")))
     return _agrupar_iguais(a + b)
 
 
@@ -334,7 +365,7 @@ async def onda_extra(estado: EstadoBusca, cliente: Any, pedidos: Sequence[Tuple[
     plano = []
     for ai, consulta, motor in pedidos:
         estado.extras[ai] = estado.extras.get(ai, 0) + 1
-        plano.append((camada._base(consulta, "google"), [ai], f"reformulada ({motor})"))
+        plano.append((com_motor(camada._base(consulta, "google")), [ai], f"reformulada ({motor})"))
     if plano and cliente is not None and getattr(cliente, "ativo", False):
         await _executar_onda(estado, cliente, _agrupar_iguais(plano), onda)
     return estado
