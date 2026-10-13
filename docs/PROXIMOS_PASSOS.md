@@ -182,6 +182,13 @@ e anos fora dos números (P1/P4/P6), prompts de afirmações e do juiz, `PADROES
 - [ ] **G6. Renovar a SerpAPI** (cota 250/250 no mês; erro de cota → parar e avisar) e a chave do OpenRouter (expira em 22/10/2026).
 - [ ] **G7. Ingestor**: `afirmacao_checada = "#CaiuNaRede"` em 39 registros da Lupa (usar o título sem hashtag); 3.094 do Boatos e
   8.277 da Lupa têm só título/resumo (`origem=rss-titulo`).
+- [ ] **G9. Motor de busca** (auditor D, rodada com Google News): o News não indexa o boatos.org e o `site:… OR …` devolve só 4 dos
+  12 hosts. Medir recall@8 por motor e por agência nas ~100 checagens `fora_da_base` de 2026; testar o híbrido (News para a consulta
+  pura + orgânico para o `site:`); ler mais de 8 dos até 100 resultados; não congelar em cassete consulta vazia do News.
+- [ ] **G10. Juiz e decisão na web**: REFUTA por ausência/inferência (regra 3b adicionada, falta medir com 40 pares); citação só prova
+  existência, não suporte; R11 nunca disparou; trava determinística `afirma ⇒ núcleo ≈ afirmação` (inclusive "X não faz Y" sem atribuição).
+- [ ] **G11. Operação**: LLM cai (504/429 do provedor) em ~8% dos casos e muda o desfecho do gate e do aviso de data; lock entre
+  processos não funciona no Windows (`fcntl`); repetir cada caso ≥ 3× para separar variância de LLM de efeito de mudança.
 - [ ] **G8. Decisões**: P3(c) (trecho do índice como corpo quando a página não carrega), P7 (métrica das `antigas_como_atuais` e
   controles sem origem) e a política de `sem_evidencia` (§5.3).
 
