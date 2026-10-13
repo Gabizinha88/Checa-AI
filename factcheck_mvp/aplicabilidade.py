@@ -228,6 +228,8 @@ def e_aplicavel(
         return (False, "corpo não lido")
     if classe not in TRATA:
         return (False, "juiz não trata do fato")
+    if classe not in ("SUSTENTA", "REFUTA"):  # P2 (13/10): RELATA = a alegação checada pode ser outra
+        return (False, "juiz só relata: a alegação checada pode ser outra")
     if citacao_verificada is not True:
         return (False, "sem citação verificada")
     if direcao(veredito) == 0.0:

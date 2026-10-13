@@ -22,6 +22,7 @@ Fórmula (log-odds, prior neutro L0 = 0), por afirmação a:
                 w = W_POSTURA * f_fonte * (1 − prob_fake_pagina)  (T6; sem modelo real, fator 1,0)
                 w < 5% de W_POSTURA·f_fonte (prob_fake > 0,95): não vota (D-c, FRACAO_MIN_VOTO); vale também para o desconto temporal do E4
       veredito: d = selos.direcao(veredito) (FALSO +1 … VERDADEIRO -1; SATIRA 0 = não vota)
+                só com classe SUSTENTA ou REFUTA (P2, 13/10): RELATA_SEM_ENDOSSO não deixa o selo votar
                 w = W_VEREDITO * f_fonte; só selo do ÍNDICE (origem "pagina" não vota: T6)
       f_fonte = confiabilidade da fonte (confiabilidade.FATOR_POSTURA / FATOR_VEREDITO):
                 curada 1,0 · institucional / muito acessada (Tranco) 0,6 (selo 0,8) ·
@@ -108,6 +109,10 @@ F_VEREDITO_NAO_CURADA = confiabilidade.FATOR_VEREDITO[confiabilidade.ALTO_TRAFEG
 
 CLASSES_VOTO = ("SUSTENTA", "REFUTA")
 CLASSES_TRATA = ("SUSTENTA", "REFUTA", "RELATA_SEM_ENDOSSO")
+# P2 (13/10): o selo do índice só vota quando o juiz diz que a página CONFIRMA ou CONTESTA a afirmação.
+# RELATA_SEM_ENDOSSO ("parecida, não a mesma") indica que a alegação checada pode ser outra: aplicar o
+# selo dela à afirmação do usuário foi a causa do único erro grave da simulação de 13/10 (falso → baixa).
+CLASSES_SELO = ("SUSTENTA", "REFUTA")
 
 
 @dataclass
@@ -504,6 +509,9 @@ def _contribuicoes(it: ItemEvidencia, s: float, dec: Decisao, agencia_refuta: bo
         if it.classe not in CLASSES_TRATA:
             dec.vereditos_ignorados.append({"url": it.url, "veredito": it.veredito,
                                             "motivo": "juiz: a página não trata desta afirmação"})
+        elif it.classe not in CLASSES_SELO:
+            dec.vereditos_ignorados.append({"url": it.url, "veredito": it.veredito,
+                                            "motivo": "juiz: a página só relata; a alegação checada pode ser outra"})
         elif it.origem_veredito == "pagina":
             # T6: selo ClaimReview extraído da própria página (template/JSON-LD do portal) não
             # vota; só o do índice. origem_veredito None (ausente) segue votando, como antes.

@@ -205,10 +205,11 @@ def test_mesma_url_no_indice_e_na_web_conta_uma_vez(amb, monkeypatch):
 
 def test_selo_verdadeiro_do_fato_ou_fake_da_baixa(amb, monkeypatch):
     """Direção pelo enum (VERDADEIRO → baixa), nunca pelo nome do portal ('Fato ou Fake').
-    T6: o selo extraído da própria página não vota; o selo que vota vem do ÍNDICE (origem "indice")."""
+    T6: o selo extraído da própria página não vota; o selo que vota vem do ÍNDICE (origem "indice").
+    P2 (13/10): e só com a página SUSTENTA/REFUTA (aqui a página "confirma"; RELATA não deixa o selo votar)."""
     monkeypatch.setenv("INDICE_CHECAGENS", "1")
     url = "https://g1.globo.com/fato-ou-fake/noticia/2024/05/10/e-fato-que-ponte.ghtml"
-    frase = "Circula nas redes a informação sobre a inauguração da ponte, verificada pelo Fato ou Fake."
+    frase = "O Fato ou Fake confirma a inauguração da ponte Salvador-Itaparica, verificada pela equipe."
     r, corpo = _pag(url, "Ponte Salvador-Itaparica foi inaugurada", frase)
     amb[url] = corpo
     idx = Indice.de_checagens([{"url": url, "titulo": "Ponte Salvador-Itaparica foi inaugurada",

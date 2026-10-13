@@ -366,7 +366,7 @@ def resumir_julgamento(ai: int, itens: Iterable[Dict[str, Any]]) -> ResumoJulgam
             n["sem_juiz"] += 1
         if c in COM_POSTURA:
             clusters.add(it.get("cluster") or it.get("url"))
-        if c in TRATA and it.get("veredito") and selos.direcao(it.get("veredito")) != 0:
+        if c in COM_POSTURA and it.get("veredito") and selos.direcao(it.get("veredito")) != 0:  # P2: RELATA não vale
             ver = True
         if c == "NAO_TRATA":
             fora.append(((it.get("titulo") or "").strip()[:140], it.get("dominio") or ""))
