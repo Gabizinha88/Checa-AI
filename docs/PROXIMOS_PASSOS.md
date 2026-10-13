@@ -111,7 +111,7 @@ Números de referência já simulados estão em `REVIEW_2.md §3`.
   testes, só então implemente.
 - [x] ~~**B3. Rede social julgada só pelo título**~~ — coberto em parte pelo PR #11 (plataforma pesa 0,45 e não
   crava nível sozinha; o grave `cr_chico_cesar_proibiu_direita` sumiu). Se E3 for aprovada, título nem vota.
-- [ ] **B4. Agência sozinha nunca chega a alta** (R1+R11): REFUTA de agência curada vale como selo; com agência
+- [x] **B4. Agência curada é confiável por natureza** ✅ (13/10, decisão da usuária: REFUTA de agência curada pesa 1,5; R11 anula SUSTENTA de não-agência). Descrição original: **Agência sozinha nunca chega a alta** (R1+R11): REFUTA de agência curada vale como selo; com agência
   refutando, SUSTENTA de não-agência não vota.
 - [x] **B5. Trava VAGO** só para sujeito genérico (economia, país, governo); hoje dispara em
   "Ibuprofeno piora o quadro de dengue".
@@ -164,6 +164,26 @@ Números de referência já simulados estão em `REVIEW_2.md §3`.
   gerar localmente pelo ingestor.
 - [ ] **F5. Alerta de chave expirada**: `/saude` acusar quando o OpenRouter responder 401 (expira 22/10).
 - [ ] **F6. `.env.mvp.example`**: documentar `OPENROUTER_REASONING_EFFORT=none` e `OPENROUTER_RPM=30`.
+
+### Fase G — da auditoria de 13/10 (`eval/ITERACOES.md`, entrada "Auditoria de agentes e prompts")
+
+Feitos nessa rodada: `TELEMETRIA_PROMPTS`, `eval.auditoria`, B4, P2 (selo só com SUSTENTA/REFUTA), índice pela 1ª frase do trecho
+e anos fora dos números (P1/P4/P6), prompts de afirmações e do juiz, `PADROES_LLM` off, DNS/retry (P3 a, b). Itens abertos:
+
+- [ ] **G1. Primas temáticas com B4** (maior risco de erro grave verdadeiro → alta): escrever variantes verdadeiras ou de alegação
+  diferente do mesmo tema (sem usar o texto do alvo) e rodar índice+juiz; meta: 0 alta em verdadeiras.
+- [ ] **G2. Polaridade e divisão de frase por LLM**: 100 frases com "não" interno e "É falso que" em moldura/aspas, 3 repetições;
+  a regra 2 ainda manda inverter "X não faz Y" e `_moldura_negacao` só casa no início do texto.
+- [ ] **G3. Paráfrase e holdout do índice**: recall@5 e FP com paráfrases humanas das checagens (e `checagens_holdout_excluidas.json`);
+  hoje só se mede o caso verbatim. A cobertura de 0,8 mede a consulta, não o registro; "não" é stopword; `score_rel` não é usado.
+- [ ] **G4. Datas sem marcador e ano ignorado**: pares com ano trocado, hoax de morte reciclado; E4 só desconta com "hoje/ontem/agora".
+- [ ] **G5. B4/R11 e o gate `pulou_web` com a web ligada** (precisa de SerpAPI): comparar B4 ligado/desligado, contar
+  `posturas_suprimidas`, conferir à mão se a REFUTA de agência é da mesma alegação.
+- [ ] **G6. Renovar a SerpAPI** (cota 250/250 no mês; erro de cota → parar e avisar) e a chave do OpenRouter (expira em 22/10/2026).
+- [ ] **G7. Ingestor**: `afirmacao_checada = "#CaiuNaRede"` em 39 registros da Lupa (usar o título sem hashtag); 3.094 do Boatos e
+  8.277 da Lupa têm só título/resumo (`origem=rss-titulo`).
+- [ ] **G8. Decisões**: P3(c) (trecho do índice como corpo quando a página não carrega), P7 (métrica das `antigas_como_atuais` e
+  controles sem origem) e a política de `sem_evidencia` (§5.3).
 
 ## 5. Decisões que são do usuário (pergunte; não decida sozinho)
 

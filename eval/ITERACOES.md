@@ -340,3 +340,48 @@ Base: `feat/fase-eb-followup` @ `62c6156`, 39 commits depois de `0c9267c` (o com
 - Import sem uso removido de `pipeline.py`; docstring de `eval/decisao.py` corrigido.
 - Medição: pytest 894 passed; `eval.decisao --snapshot eval/snapshots/a3-dev.jsonl`: acerto 0,1449, acerto+parcial 0,3333, erro grave 0 (igual ao anterior).
 - Item 6 (`/checar --json` devolve raciocínio bruto): decidido pela usuária em 09/10: a API continua devolvendo o texto bruto, sem omitir nem sinalizar. Nenhuma mudança de código.
+
+
+## Iteração Auditoria de agentes e prompts (13/10 — 2026-10-13)
+
+Branch `feat/auditoria-agentes` (base `main` @ `c23fbf7`). Modelo LLM: `anthropic/claude-haiku-5.5` via OpenRouter. **Modo só-base**: a SerpAPI estava com a cota do mês esgotada (250/250, plano grátis), então não houve busca na web; `fora_da_base` e os controles escritos à mão não têm como resolver. Cassetes gravados em `eval/cassettes/` (não versionados). Telemetria com `TELEMETRIA_PROMPTS=1`.
+
+- Hipótese: os prompts e a lógica dos agentes falham de forma sistemática, e os traces com prompt completo mostram onde. Ferramentas novas: `TELEMETRIA_PROMPTS=1` (prompt e saída por inteiro no trace) e `python3 -m eval.auditoria` (resumo legível de cada run).
+- Método: simulação de 50 frases (seed 42) pelo `POST /checar` (`scripts/simular_usuario.py`), duas rodadas com a mesma amostra, e auditoria por subagentes Sonnet 5.5 (esforço alto, contexto separado, só leitura): A (causas dos erros e dos "sem evidência"), B (acertos e prompts) e C (avaliação independente da rodada 2).
+- Diagnóstico (rodada 1, `reports/simulacao_2026-10-13_1028`):
+  - **8 de 21** casos sem evidência tinham a checagem certa em 1º no BM25, cortada pelo critério de cobertura (medida só em `afirmacao_checada`+`titulo`; a frase do usuário é a descrição do boato, que está no `trecho`; 39 registros da Lupa têm `afirmacao_checada = "#CaiuNaRede"`). Recall nas 140 frases `checadas_falsas`: 81/140.
+  - **1 erro grave** (`checadas_falsas:18`, falso → baixa): o extrator dividiu a frase e inverteu a polaridade de uma parte; o juiz disse RELATA (outra alegação) e o selo do índice votou mesmo assim.
+  - Prompt de afirmações apagava o autor da fala (regra 3), perdia marcadores de tempo e fragmentava frases; citação do juiz copiava a descrição do boato; `classe` vinha antes do raciocínio; a chamada LLM `padroes` marcava a moldura "Me mandaram…" como "fonte vaga" em 24 de 29 saídas e não afeta o nível.
+  - Leitura de páginas: falha de DNS aparecia como "url insegura (SSRF)"; 5 s sem nova tentativa para páginas da base curada.
+- Mudança (um commit por tema):
+  - B4 (decisão da usuária, 13/10: agência de checagem curada é confiável por natureza): a postura REFUTA de agência curada (catálogo `tipo=checagem`) pesa 1,5 como um selo (R1); havendo REFUTA de agência (lida, dentro da janela), a SUSTENTA de quem não é agência não vota na afirmação (R11, `posturas_suprimidas`).
+  - P2: o selo do índice só vota, e o gate E1 só fecha, com SUSTENTA ou REFUTA; RELATA_SEM_ENDOSSO não vota (era o resto do B1).
+  - P1/P4/P6 (`indice.py`, feito por subagente Haiku e conferido): o índice também aceita o registro se a consulta cobre ≥ 0,8 de afirmação+título+1ª frase do trecho (`cobertura_min_trecho`); anos 1900–2100 não contam como quantidade; evento `indice_descarte`.
+  - Prompts de afirmações e do juiz (atribuição, moldura x conteúdo, uma frase = uma afirmação, marcadores de tempo, citação com o veredito, `classe` por último, ressalva de escopo → RELATA).
+  - `PADROES_LLM` desligado por padrão. P3: DNS como erro próprio (`fallback dns`) com nova tentativa; páginas da base com 10 s e 2ª tentativa.
+- Métricas (antes → depois), mesma amostra de 50 frases, só-base:
+
+| métrica | rodada 1 | rodada 2 |
+|---|---|---|
+| acerto (sobre os executados) | 38,8% (19/49) | 58,0% (29/50) |
+| `checadas_falsas` acerto | 10/20 | 19/20 |
+| `verdadeiras` acerto | 9/15 | 10/15 |
+| `antigas_como_atuais`, `fora_da_base` | 0/5 · 0/10 | 0/5 · 0/10 (indeterminada) |
+| boato não detectado (erro grave) | 1 | 0 |
+| falso alarme | 0 | 0 |
+| erro (timeout 504) | 1 | 0 |
+| evidência insuficiente | 59% | 42% |
+| tempo médio | 20,2 s | 13,9 s |
+
+  - Nível 0 (`eval.decisao`, a3-dev, 69 casos): acerto 0,1449 → 0,1884 (B4: 3 casos viram acerto, 1 caso `sem_evidencia` sobe de média para alta); acerto+parcial 0,3333 → 0,3188; erro grave 0 → 0; indeterminada 0,6522 igual. P2 e P1 não mexem no snapshot.
+  - Benchmark do índice (`scripts/bench_indice_checagens.py`): r@1 0,7727, r@3 0,8636, falsos positivos 6/76 (7,9%), iguais antes e depois. `scripts/bench_recall_frases.py` (novo): `checadas_falsas` 81/140 → 138/140; `verdadeiras` 8/11 → 9/11; `fora_da_base` com algum retorno 1/46 → 1/46.
+  - pytest: 894 → 930 passed.
+- Avaliação independente (auditor C, Sonnet 5.5) da rodada 2: 25 acertos `certo_pelo_motivo_certo`, 1 `certo_por_acaso`, 3 `duvidoso`. Origem dos +10 acertos: ~6 do índice (P1/P4), 3 da rede estável na rodada 2 (falsas:16, 17, 121), 1 de P2+prompt (falsas:18).
+- **O que NÃO dá para afirmar**:
+  - "O sistema acerta 58%": 22 dos 25 acertos corretos usam como entrada a 1ª frase do trecho ou o título da própria checagem (recuperação lexical, não paráfrase nem julgamento independente). Nas 40 consultas independentes do benchmark não houve ganho (38 → 38).
+  - "Erro grave eliminado": com n=50 e uma execução por caso, 0 e 1 são indistinguíveis. O 0 depende do P2: em `fora_da_base:23` o extrator inverteu a polaridade ("X não faz Y" ainda manda inverter) e o índice devolveu um RELATA com selo FALSO; sem P2 daria `baixa`.
+  - Nada sobre B4/R11 (R11 nunca disparou; o peso 1,5 coincide com o do selo nos casos observados), web, ou texto sem marcador de data.
+  - `verdadeiras`: a base tem só 38 registros VERDADEIRO contra ~75% FALSO.
+- Riscos abertos (medição que falta em `docs/PROXIMOS_PASSOS.md`, Fase G): primas temáticas votando com B4 (verdadeiro → alta); polaridade e divisão de frase por LLM; paráfrase e holdout do índice; reciclagem de hoax sem marcador de data e o ano ignorado; B4/R11 e o gate `pulou_web` com a web ligada.
+- Modo: só-base · buscas SerpAPI live: 0 · LLM: ≈ US$ 0,12 de OpenRouter medidos pelo saldo da chave (US$ 0,057 → 0,174; inclui duas rodadas de 50 casos com Haiku 5.5 e duas tentativas abortadas com outros modelos). Baseline atualizado? não (`eval/baseline.json` só muda após record/replay com web). Holdout: não rodado (sem cassetes nem web).
+- Decisões que ficam com a usuária: (1) política de `sem_evidencia` (alta para boato sem prova?), que B4 reforça; (2) P3(c): usar o `trecho` do índice como corpo quando a página não carrega (enfraquece o E3 para a base curada); (3) P7: contar `indeterminada` com `alerta_data` como acerto parcial nas `antigas_como_atuais` e separar os controles sem `url_checagem`; (4) tornar determinística a regra de polaridade dentro de moldura/aspas.
