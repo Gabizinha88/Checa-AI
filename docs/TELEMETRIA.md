@@ -32,6 +32,10 @@ telemetria.finalizar_run(relatorio.model_dump(mode="json"))
 - `Pipeline.executar` abre/fecha o run sozinho (o nome na especificação era `checar`).
 - Ambiente: `TELEMETRIA=0` desliga; `TELEMETRIA_DIR` (padrão `runs/` na raiz). Sob pytest fica
   desligada, salvo `TELEMETRIA` explícita (testes usam `tmp_path`).
+- `TELEMETRIA_PROMPTS=1` (auditoria de prompts e raciocínio): o evento `llm` ganha `prompt` (as mensagens
+  enviadas, estruturadas) e `saida` por inteiro (limite de 60000 chars por string, em vez de 2000), sempre com a
+  redação de segredos. Padrão desligado: o trace guarda só `prompt_sha` e a saída truncada. Os traces ficam grandes
+  (páginas inteiras no prompt do avaliador); `runs/` não é versionado.
 - Antes de gravar: redação de segredos (`api_key=`, `key=`, `token`, `/bot<token>/`,
   `Authorization`/`Bearer`, `sk-...` e os valores de `SERPAPI_KEY`/`OPENROUTER_API_KEY`/
   `TELEGRAM_TOKEN` do ambiente) e truncamento de strings em 2000 chars (`…[+N chars]`).

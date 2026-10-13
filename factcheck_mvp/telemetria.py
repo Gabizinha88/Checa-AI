@@ -52,6 +52,7 @@ from typing import Any, Dict, Iterator, List, Optional
 
 RAIZ = Path(__file__).resolve().parent.parent
 LIMITE_STR = 2000  # truncamento padrão de strings gravadas
+LIMITE_PROMPT = 60000  # strings do evento `llm` quando TELEMETRIA_PROMPTS está ligada (auditoria de prompts)
 
 TIPOS = ("run_inicio", "run_meta", "run_fim", "etapa", "llm", "http", "fonte", "fallback",
          "sinal", "decisao", "erro", "span_inicio", "span_fim")
@@ -66,6 +67,12 @@ def habilitada() -> bool:
         # pytest: não grava runs/ a menos que o teste peça explicitamente
         return "PYTEST_CURRENT_TEST" not in os.environ
     return v.strip().lower() not in ("0", "false", "off", "nao", "não", "")
+
+
+def prompts_habilitados() -> bool:
+    """TELEMETRIA_PROMPTS=1 grava o prompt (mensagens) e a saída do LLM por inteiro no evento `llm`
+    (padrão: desligado; só o hash do prompt e a saída truncada). Para auditar prompts e raciocínio."""
+    return (os.environ.get("TELEMETRIA_PROMPTS") or "").strip().lower() in ("1", "true", "on", "sim", "yes")
 
 
 def diretorio() -> Path:
@@ -281,7 +288,8 @@ def evento(tipo: str, /, **dados: Any) -> None:
     try:
         linha = {"ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
                  "t_rel_ms": round((time.perf_counter() - r.t0) * 1000, 1),
-                 "tipo": tipo, "dados": limpar(dados)}
+                 "tipo": tipo,
+                 "dados": limpar(dados, LIMITE_PROMPT if tipo == "llm" and prompts_habilitados() else LIMITE_STR)}
         txt = json.dumps(linha, ensure_ascii=False, default=str)
         with r.lock:
             with open(r.pasta / "trace.jsonl", "a", encoding="utf-8") as f:

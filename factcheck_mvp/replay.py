@@ -683,6 +683,8 @@ def llm_post(url: str, payload: Dict[str, Any], headers: Optional[Dict[str, str]
     prompt_txt = _json.dumps(prompt, ensure_ascii=False, sort_keys=True, default=str)
     base = {"motor": motor, "modelo": (payload or {}).get("model"), "finalidade": fin,
             "prompt_sha": telemetria.sha_curto(prompt_txt), "n_chars_prompt": len(prompt_txt)}
+    if telemetria.prompts_habilitados():  # TELEMETRIA_PROMPTS=1: o prompt inteiro, para auditar
+        base["prompt"] = prompt
     kw: Dict[str, Any] = {"timeout": timeout}
     if headers is not None:
         kw["headers"] = headers
