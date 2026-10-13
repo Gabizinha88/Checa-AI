@@ -67,12 +67,31 @@ class CorpoLido:
     veredito_pagina: Optional[dict] = None  # ClaimReview da própria página (jsonld.veredito_da_pagina)
 
 
+def _resolver(host: str):
+    """getaddrinfo com UMA nova tentativa (falha de DNS passageira é comum). None = não resolveu."""
+    for tentativa in (0, 1):
+        try:
+            return socket.getaddrinfo(host, None)
+        except Exception:
+            if tentativa == 0:
+                time.sleep(0.4)
+    return None
+
+
+def _dns_falhou(url: str) -> bool:
+    """A URL foi barrada porque o DNS não resolveu (e não por apontar para IP privado)?"""
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except Exception:
+        return False
+    return bool(host) and replay.modo_atual() != "replay" and _resolver(host) is None
+
+
 def _ip_privado(host: str) -> bool:
     if replay.modo_atual() == "replay":
         return False  # replay não resolve DNS: o cassete só existe se passou no SSRF ao gravar
-    try:
-        infos = socket.getaddrinfo(host, None)
-    except Exception:
+    infos = _resolver(host)
+    if infos is None:
         return True  # não resolveu: trata como inseguro
     for fam, _, _, _, sockaddr in infos:
         ip_txt = sockaddr[0]
@@ -235,6 +254,9 @@ async def _baixar(url: str, catalogo, timeout_pag: float, max_bytes: int,
     # Sem allow-list de catálogo: o núcleo é busca aberta. Qualquer URL pública que
     # passe no anti-SSRF é lida; o peso de fonte não-curada é do agregador.
     if not _url_segura(url):
+        if _dns_falhou(url):  # não é SSRF: a rede falhou. Aparece como fallback e como erro próprio.
+            telemetria.fallback("dns", "não resolveu o domínio", url=url[:120])
+            return CorpoLido(url=url, erro="dns: não resolveu o domínio")
         return CorpoLido(url=url, erro="url insegura (SSRF)")
     try:
         atual = url
@@ -289,13 +311,20 @@ async def aprofundar(cands: List[dict], catalogo, por_afirm: int = 0,
         return saida
 
     async def _um(d):
-        try:
-            return d["url"], await asyncio.wait_for(
-                _baixar(d["url"], catalogo, timeout_pag, max_bytes,
-                        d.get("_afirmacao") or d.get("titulo") or ""),
-                timeout=timeout_pag + 10)  # +10s: extração de HTML grande roda em thread
-        except Exception as e:
-            return d["url"], CorpoLido(url=d["url"], erro=str(e)[:120])
+        # `_timeout` (s) e `_reler` (1 nova tentativa) vêm do chamador: checagem que já está na base
+        # curada é a fonte mais valiosa, então não se desiste dela na 1ª falha de rede.
+        tpag = float(d.get("_timeout") or timeout_pag)
+        tentativas = 2 if d.get("_reler") else 1
+        for t in range(tentativas):
+            try:
+                c = await asyncio.wait_for(
+                    _baixar(d["url"], catalogo, tpag, max_bytes, d.get("_afirmacao") or d.get("titulo") or ""),
+                    timeout=tpag + 10)  # +10s: extração de HTML grande roda em thread
+            except Exception as e:
+                c = CorpoLido(url=d["url"], erro=str(e)[:120])
+            if c.corpo_lido or t == tentativas - 1:
+                return d["url"], c
+            await asyncio.sleep(0.5)
 
     try:
         # asyncio.wait NÃO cancela: downloads concluídos no budget sobrevivem

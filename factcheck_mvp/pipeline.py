@@ -684,8 +684,11 @@ class Pipeline:
             if p["url"] not in vistos and not p.get("corpo") and not p.get("_tentada"):
                 vistos.add(p["url"])
                 ai0 = next((ai for ai in sorted(p.get("afs") or {0}) if ai < len(afs)), None)
-                alvo_crawl.append({"url": p["url"], "titulo": p.get("titulo", ""),
-                                   "_afirmacao": afs[ai0].alvo() if ai0 is not None and afs else ""})
+                alvo = {"url": p["url"], "titulo": p.get("titulo", ""),
+                        "_afirmacao": afs[ai0].alvo() if ai0 is not None and afs else ""}
+                if "indice" in (p.get("origens") or ()):  # base curada: 10 s e uma nova tentativa
+                    alvo.update({"_timeout": 10.0, "_reler": True})
+                alvo_crawl.append(alvo)
         por_afirm = max(1, int(getattr(config, "AGENTE_MAX_POR_AFIRMACAO", 12) or 12))
         teto_total = max(1, int(getattr(config, "DEEP_CRAWL_TOTAL", 0) or 0), 3 * por_afirm)
         alvo_crawl = alvo_crawl[: teto_total]

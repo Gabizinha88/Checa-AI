@@ -113,6 +113,8 @@ não gravada` (não há cassete `relogio://hoje`) ou `cassete sem data` (o arqui
 `data_pub` (E4: `data_pub` não-vazia que `normalizar_data` não lê → a fonte fica sem data e sem desconto
 temporal; `valor` = bruta[:40]; `motivo` = `formato não reconhecido`, ou `sem âncora` quando a data é
 relativa, p.ex. "há 3 dias", e não há data para ancorá-la; na entrada por link, `motivo` = o erro do trafilatura quando ele falha ao extrair a data),
+`dns` (P3: o domínio de uma página a ler não resolveu mesmo após uma nova tentativa; antes isso aparecia como
+"url insegura (SSRF)". `motivo` = `não resolveu o domínio`, com `url`),
 `config` (E4: `E4_*` (janelas e `E4_MARCO_MAX_DIAS`) inválido no ambiente, não inteiro > 0 → usa o
 default; `motivo` = o aviso, p.ex. `E4_JANELA_HOJE='0' inválido (esperado inteiro > 0); usando 2`; emitido no
 início de cada execução).
