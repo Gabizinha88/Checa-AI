@@ -139,15 +139,18 @@ Responda SOMENTE com um array JSON, sem texto antes ou depois. Cada item:
 {{"afirmacao": "...", "nucleo": "...", "polaridade": "afirma" ou "nega", "consulta": "..."}}
 
 Regras:
-1. "afirmacao": o que o TEXTO afirma, em português, com as palavras do texto, frase autocontida (sem pronomes soltos). Não acrescente fatos. NUNCA traduza para outro idioma. Preserve números e datas exatamente como estão (ex.: "30 mil", "2022").
-2. Negação: se o TEXTO nega uma alegação ("É falso que X", "Não é verdade que X", "X não faz Y"), "afirmacao" mantém a negação, "nucleo" é a alegação X na forma afirmativa (sem a negação) e "polaridade" é "nega". Se não há negação, "nucleo" repete "afirmacao" e "polaridade" é "afirma".
-3. Relato ("Fulano diz que X", "circula vídeo afirmando X") e pergunta ("É verdade que X?"): a afirmação verificável é X.
+1. "afirmacao": o que o TEXTO afirma, em português, com as palavras do texto, frase autocontida (sem pronomes soltos). Não acrescente fatos. NUNCA traduza para outro idioma. Preserve números, datas e marcadores de tempo exatamente como estão (ex.: "30 mil", "2022", "hoje", "agora", "acabou de sair", "ontem").
+2. Negação: se o TEXTO nega uma alegação ("É falso que X", "Não é verdade que X", "X não faz Y"), "afirmacao" mantém a negação, "nucleo" é a alegação X na forma afirmativa (sem a negação) e "polaridade" é "nega". Se não há negação, "nucleo" repete "afirmacao" e "polaridade" é "afirma". A negação conta mesmo dentro de aspas ou depois de uma moldura ("Recebi isso: “É falso que X”" → polaridade "nega"). A pergunta final ("é verdade?") não é negação.
+3. Moldura x atribuição. (a) Descarte a MOLDURA de como a mensagem chegou ("me mandaram", "vi um post", "recebi no grupo", "estão compartilhando") e as perguntas ("é verdade?", "dá pra confiar?"): extraia só o conteúdo que ela traz. (b) PRESERVE a atribuição quando o conteúdo diz que uma pessoa, órgão ou estudo disse, escreveu, chamou, decidiu, concluiu ou mostrou algo ("Fulano disse que X", "a PF concluiu X", "estudo aponta X"): a afirmação e o núcleo são a frase inteira, com o autor, porque o que se checa é se ele de fato o fez. Só remova o relator quando for mera circulação sem autor identificado ("circula um áudio afirmando X", "dizem que X" → X).
 4. "consulta": 5 a 8 palavras-chave em português, tiradas do núcleo, para buscar o tema no Google (se o núcleo for curto, use todas as palavras importantes dele). Mantenha os acentos. Não invente termos que não estão no texto. Sem aspas, sem operadores, sem as palavras "falso", "verdade", "boato".
 5. Ignore saudações, apelos ("compartilhe", "urgente") e opiniões. No máximo {n} itens. Se não houver nenhuma afirmação factual, responda [].
+6. Uma frase com várias orações (separadas por vírgula, "e", "enquanto", "só") que descreve um único acontecimento ou uma comparação é UMA afirmação: mantenha a frase inteira. Só crie itens separados para alegações independentes sobre fatos diferentes.
 
 Exemplos:
 TEXTO: "É falso que beber água gelada causa gripe"
 [{{"afirmacao": "Beber água gelada não causa gripe", "nucleo": "Beber água gelada causa gripe", "polaridade": "nega", "consulta": "beber água gelada causa gripe"}}]
+TEXTO: "Recebi no grupo: “Fulano disse que os idosos vão decidir a eleição.” Alguém sabe se é verdade?"
+[{{"afirmacao": "Fulano disse que os idosos vão decidir a eleição", "nucleo": "Fulano disse que os idosos vão decidir a eleição", "polaridade": "afirma", "consulta": "Fulano disse idosos vão decidir eleição"}}]
 TEXTO: "Prefeitura do Recife abriu 30 mil vagas de emprego em 2025"
 [{{"afirmacao": "A Prefeitura do Recife abriu 30 mil vagas de emprego em 2025", "nucleo": "A Prefeitura do Recife abriu 30 mil vagas de emprego em 2025", "polaridade": "afirma", "consulta": "Prefeitura Recife 30 mil vagas emprego 2025"}}]
 
