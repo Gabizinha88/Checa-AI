@@ -67,6 +67,21 @@ def test_verificacoes_de_regras():
     assert not web["ok"]                                         # web com selo aplicável da base
 
 
+def test_web_com_checagem_antiga_barrada_por_data_nao_viola_o_e1():
+    """antigas_como_atuais: a base tem a checagem, mas o E4 a barra por data e a web roda de propósito."""
+    r = _reg("enganoso", "indeterminada", 0.5, cat="antigas_como_atuais", header="h", why="w", serpapi=2,
+             justificativa="Verifique se não é notícia antiga recirculando.",
+             vereditos_aplicados=[{"url": "https://lupa.test/1"}], alerta_data=True)
+    web = sim.verificar_regras([r], {"lupa.test/1"})[3]
+    assert web["ok"]
+
+
+def test_alerta_de_data_derivado_do_texto_da_justificativa():
+    rel = {"propensao": "indeterminada", "justificativa": "As fontes são anteriores. Verifique se não é notícia antiga recirculando.",
+           "decisao": {}, "fontes": []}
+    assert sim.extrair(rel)["alerta_data"] is True
+
+
 def test_neutralidade_reprova_e_falso_na_conclusao():
     r = _reg("falso", "alta", 0.9, header="h", why="", justificativa="Isso é falso, segundo nós.", serpapi=0,
              vereditos_aplicados=[])

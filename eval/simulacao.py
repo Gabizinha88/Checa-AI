@@ -170,7 +170,9 @@ def extrair(rel: Dict[str, Any]) -> Dict[str, Any]:
               for f in rel.get("fontes", []) or []]
     selos = [{"agencia": f["veiculo"], "selo": f["veredito"]} for f in fontes if f["veredito"]]
     alerta = rel.get("alerta_data", NAO_IMPLEMENTADO) if "alerta_data" in rel else NAO_IMPLEMENTADO
-    if alerta == NAO_IMPLEMENTADO and any("notícia antiga" in (l or "").lower() for l in rel.get("limitacoes", [])):
+    # O aviso do E4 ("verifique se não é notícia antiga recirculando") vai na justificativa e no why, não só nas limitações.
+    textos_aviso = list(rel.get("limitacoes", []) or []) + [rel.get("justificativa", ""), rel.get("why_1linha", "")]
+    if alerta == NAO_IMPLEMENTADO and any("notícia antiga" in (t or "").lower() for t in textos_aviso):
         alerta = True
     return {
         "nivel": rel.get("propensao"), "prob": dec.get("prob"),
@@ -275,7 +277,8 @@ def verificar_regras(regs: List[Dict[str, Any]], urls_base: set) -> List[Dict[st
         if so_titulo:
             titulo.append({"id": cid, "detalhe": f"{len(so_titulo)} fonte(s) só de título votaram: {so_titulo[0]}"})
         base_aplicavel = any(_chave(v.get("url")) in urls_base for v in r.get("vereditos_aplicados", []))
-        if base_aplicavel and (r.get("serpapi") or 0) > 0:
+        # Checagem antiga barrada por data (E4) não é "aplicável": a web roda de propósito (alerta_data).
+        if base_aplicavel and (r.get("serpapi") or 0) > 0 and r.get("alerta_data") is not True:
             web.append({"id": cid, "detalhe": f"selo aplicável da base e mesmo assim {r['serpapi']} busca(s) na web"})
     return [
         {"nome": "Nenhuma conclusão contém \"é falso\" ou \"é verdade\"", "ok": not neutro, "violacoes": neutro,
@@ -283,9 +286,9 @@ def verificar_regras(regs: List[Dict[str, Any]], urls_base: set) -> List[Dict[st
         {"nome": "Selos aparecem sempre atribuídos à agência (\"Selo do Aos Fatos: FALSO\")", "ok": not selo,
          "violacoes": selo, "nota": "Formato exigido pela Fase E (E5); antes dela a justificativa usa \"FALSO (Agência)\"."},
         {"nome": "Nenhuma fonte lida só pelo título influenciou a propensão", "ok": not titulo, "violacoes": titulo,
-         "nota": "Regra da Fase E (E3); hoje fontes só de título votam com peso 0,7."},
+         "nota": "Regra da Fase E (E3): fonte lida só pelo título não vota."},
         {"nome": "A web não foi acionada quando a base tinha checagem aplicável", "ok": not web, "violacoes": web,
-         "nota": "Regra da Fase E (E1); hoje a base e a web rodam sempre."},
+         "nota": "Regra da Fase E (E1). Exceção: checagem antiga barrada por data (E4, `alerta_data`) deixa a web rodar."},
     ]
 
 # --------------------------------------------------------------------------- relatório
