@@ -445,8 +445,18 @@ def _reservar_serpapi(url: str) -> None:
                     {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "run_id": rid,
                      "engine": dict(parse_qsl(urlsplit(url).query)).get("engine"), "q": q[:120]})
                 tmp = arq.with_suffix(f".{os.getpid()}.tmp")
-                tmp.write_text(_json.dumps(uso, ensure_ascii=False, indent=1), encoding="utf-8")
-                os.replace(tmp, arq)
+                # Pasta sincronizada (OneDrive) pode negar o os.replace por instantes (PermissionError): tenta de
+                # novo e, se não der, a contagem local é perdida mas a BUSCA segue (auditoria de 13/10).
+                for tentativa in range(4):
+                    try:
+                        tmp.write_text(_json.dumps(uso, ensure_ascii=False, indent=1), encoding="utf-8")
+                        os.replace(tmp, arq)
+                        break
+                    except OSError as e:
+                        if tentativa == 3:
+                            telemetria.fallback("serpapi.contador", f"{type(e).__name__}: {e}"[:200])
+                        else:
+                            time.sleep(0.15 * (tentativa + 1))
         _usadas_processo += 1
 
 

@@ -101,6 +101,8 @@ def _eh_homepage(url: str) -> bool:
     seg = [x for x in path.strip("/").split("/") if x]
     if len(seg) == 1 and re.fullmatch(r"[a-z]{2}(-[a-z]{2})?", seg[0], re.I):
         return True  # raiz com idioma (/en/, /pt-br/)
+    if re.search(r"/(page|pagina|pagina-)/?\d+/?$", path.lower()):
+        return True  # paginação de listagem (/page/4/): um feed de várias matérias, não um artigo
     return ("/" + path.strip("/").lower()) in _SECOES
 
 

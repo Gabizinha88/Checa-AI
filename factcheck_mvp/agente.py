@@ -491,8 +491,24 @@ def limpar_consulta(q: str) -> str:
     return " ".join(q.split()[:12])
 
 
+# Google News exige TODOS os termos nas notícias: "checagem", "é falso", "boato" zeraram 8 de 9 consultas
+# (auditoria de 13/10). No motor news a reformulação usa só o vocabulário do fato.
+_VOCAB_CHECAGEM = re.compile(r"\b(checagem|checagens|checar|falsos?|falsas?|boatos?|fake|fakes|mentiras?|verdade|"
+                             r"verdadeir[oa]s?)\b", re.I)
+
+
+def sem_vocabulario_de_checagem(q: str) -> str:
+    return " ".join(_VOCAB_CHECAGEM.sub(" ", q or "").split())
+
+
 def montar_prompt_reformular(afirmacao: str, feitas: Sequence[str], fora: Sequence[Tuple[str, str]]) -> str:
-    return PROMPT_REFORMULAR.format(
+    modelo = PROMPT_REFORMULAR
+    if motor_busca() == "google_news":
+        modelo = modelo.replace(', "é falso", "checagem".', ".").replace("buscando no Google.", "buscando no Google News.")
+        modelo = modelo.replace("- Não repita nenhuma das consultas já feitas.",
+                                "- Não use as palavras checagem, falso, boato, fake nem verdade: o Google News só devolve "
+                                "notícias que tenham TODOS os termos da consulta.\n- Não repita nenhuma das consultas já feitas.")
+    return modelo.format(
         afirmacao=afirmacao.strip()[:600],
         feitas="\n".join(f"- {q}" for q in feitas) or "- (nenhuma)",
         fora="\n".join(f"- {t or '(sem título)'} — {d or '?'}" for t, d in list(fora)[:8]) or "- (nenhuma)")
@@ -501,7 +517,12 @@ def montar_prompt_reformular(afirmacao: str, feitas: Sequence[str], fora: Sequen
 def _fallback_reformular(alvo: Alvo, feitas: Sequence[str]) -> Optional[str]:
     termos = consulta_padrao(alvo.texto)
     feitas_n = {_norm(camada.limitar_palavras(q)) for q in feitas}
-    for cand in (f"{termos} é verdade ou falso", f"{termos} checagem", f"{termos} falso"):
+    candidatas = (f"{termos} é verdade ou falso", f"{termos} checagem", f"{termos} falso")
+    if motor_busca() == "google_news":  # sem vocabulário de checagem: menos termos, ou o núcleo em ordem natural
+        candidatas = (" ".join(termos.split()[:4]), " ".join(sem_vocabulario_de_checagem(alvo.texto).split()[:8]))
+    for cand in candidatas:
+        if len(cand.split()) < 2:
+            continue
         if _norm(cand) not in feitas_n:
             return cand
     return None
@@ -515,6 +536,8 @@ def reformular(alvo: Alvo, feitas: Sequence[str], fora: Sequence[Tuple[str, str]
 
     def validar(dados: Any) -> Any:
         c = limpar_consulta(dados.consulta)
+        if motor_busca() == "google_news":
+            c = sem_vocabulario_de_checagem(c)
         if len(c.split()) < 2:
             raise ValueError("a consulta precisa ter pelo menos 2 palavras-chave")
         if _norm(c) in feitas_n:
