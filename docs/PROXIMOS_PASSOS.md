@@ -2,7 +2,11 @@
 
 > Leia este arquivo inteiro antes de agir. Depois leia `CLAUDE.md` (regras do projeto, valem sempre),
 > `docs/review/REVIEW_2.md` (diagnóstico de 30/09) e `eval/ITERACOES.md` (histórico medido).
-> Atualizado em 2026-10-07 (a versão de 30/09 cobria o PR #4 e o Review 2; a Fase A foi feita desde então).
+> Atualizado em 2026-10-10. A Fase E (E1–E5) e os itens B1/B2 estão feitos na branch `feat/fase-eb-followup`
+> (ainda não mergeada em `main`); o histórico medido está em `eval/ITERACOES.md`. O que ficou sem validar: record da
+> subamostra e holdout (custo + cassetes). Ambiente: use `.venv/Scripts/python.exe` (com `PYTHONUTF8=1`); o `python3` do
+> sistema não tem as dependências. Última medição (HEAD, nível 0): 894 testes · acerto 14,5% · acerto+parcial 33,3% ·
+> erro grave 0 · indeterminada 65,2%.
 
 ## 1. Onde estamos
 
@@ -64,28 +68,28 @@ consulte quando o usuário pedir. Nunca rode eval `record/live` sem dizer o cust
 A1 métricas que batem o trivial · A2 `_descoberta_status` · A3 evento `evidencias` + `eval.decisao` + snapshot ·
 A4 replay determinístico + `nao_reproduzido` · A5 cota SerpAPI interrompe o eval · Iteração 2 re-medida.
 
-### Fase E — processo de checagem definido pela equipe (PRIORIDADE; plano aprovado em parte)
+### Fase E — processo de checagem definido pela equipe ✅ concluída (E1–E5 implementados; falta só medir o E4 em record)
 
 Especificação recebida em 07/10 ("assistente de checagem de fatos"). Respostas da usuária: seguir a
 especificação; classificação = **opção (b)**: mostrar o selo **atribuído à agência** ("Selo do Aos Fatos:
 FALSO") e manter a NOSSA conclusão como propensão em escala. Os testes de neutralidade ficam; só passam a
 aceitar o selo quando vier no formato atribuído. Branch nova a partir da `main`.
 
-- [ ] **E1. Base primeiro, web só se não houver checagem aplicável** (`pipeline.py`, novo `aplicabilidade.py`):
+- [x] **E1. Base primeiro, web só se não houver checagem aplicável** (`pipeline.py`, novo `aplicabilidade.py`):
   base → leitura → juiz → aplicabilidade; só sem checagem aplicável: agente/SerpAPI → leitura → juiz.
   "Aplicável" = página lida por completo + juiz diz que trata do mesmo fato (SUSTENTA/REFUTA/RELATA com
   citação verificada) + selo com direção + data compatível (E4). Etapa no recibo "web pulada: checagem
   aplicável na base". Base = Lupa, Boatos.org, Fato ou Fake, E-Farsas, Comprova, Aos Fatos, Estadão Verifica.
-- [ ] **E2. "Onde foi encontrado"** (`schemas.py` `RelatorioChecagem.onde_encontrado`, bot, web): "Base de
+- [x] **E2. "Onde foi encontrado"** (`schemas.py` `RelatorioChecagem.onde_encontrado`, bot, web): "Base de
   checagem" | "Outras fontes (não encontrado na base)", com aviso explícito quando vier da web.
-- [ ] **E3. Fonte lida só pelo título não vota** (`decisao.py`: hoje `F_SO_TITULO = 0.7`): nem postura nem selo;
+- [x] **E3. Fonte lida só pelo título não vota** ✅ (decidido: título não vota; indeterminada 65% aceita) (`decisao.py`: hoje `F_SO_TITULO = 0.7`): nem postura nem selo;
   aparece na lista como "não analisada integralmente"; se nenhuma fonte lida tiver postura → "evidência
   insuficiente". ⚠️ **Impacto medido (nível 0)**: 91 de 153 posturas do snapshot vêm só de título;
   indeterminada 39% → 65%, acerto+parcial 56,5% → 30,4%, graves 1 → 2. **Aguarda decisão da usuária** (§5.1).
 - [x] **E4. Regra de data** (`aplicabilidade.py`, `config.py`) ✅ implementado (09/10, branch `feat/fase-eb-followup`): marcas "hoje/agora/ontem/nesta semana/acaba de"
   × data de publicação (janelas 2/3/8 dias, configuráveis). Fonte com data incompatível perde peso (desconto em bits, sem zerar) e não torna a checagem aplicável no gate E1. **Não eleva a propensão** (decidido em 09/10, §5.2). Regressão obrigatória:
   "Bolsonaro recebeu alta do hospital hoje" (o índice devolve uma checagem antiga do Boatos.org), coberta offline em `0ebcd57`. **Pendente:** medição em record (Task 8 Steps 3–7 do plano; aprovação e cassetes).
-- [ ] **E5. Selo atribuído** (`agregador.py`, bot, web): sempre "Selo d{o,a} <agência>: <SELO>";
+- [x] **E5. Selo atribuído** (`agregador.py`, bot, web): sempre "Selo d{o,a} <agência>: <SELO>";
   `verificar_neutralidade` ignora só esse formato, com agência cadastrada.
 - [ ] **Testes**: web pulada com checagem aplicável e chamada sem; aviso "não encontrado na base"; título que não
   vota; selo atribuído aceito e "é falso" na nossa conclusão reprovado; regra de data (caso Bolsonaro).
@@ -97,11 +101,11 @@ aceitar o selo quando vier no formato atribuído. Branch nova a partir da `main`
 Cada item: teste de comportamento que falha antes e passa depois; rodar o eval de decisão; registrar delta.
 Números de referência já simulados estão em `REVIEW_2.md §3`.
 
-- [ ] **B1. Selo só vale com postura e de checador** (`decisao.py` `CLASSES_TRATA`): selo de página que o juiz
+- [x] **B1. Selo só vale com postura e de checador** (`decisao.py` `CLASSES_TRATA`): selo de página que o juiz
   marcou `RELATA_SEM_ENDOSSO` não vota; selo só de publisher checador curado (ClaimReview de **template** do SBT
   News causou o erro grave `cr_jn_soltura_vorcaro`). Reescrever `test_selo_verdadeiro_do_fato_ou_fake_baixa`.
   Conversa com E1 ("aplicável") e E5.
-- [ ] **B2. Regra de combinação entre afirmações** (`decisao.py`, combinação de `por_af`) — erra nas DUAS direções:
+- [x] **B2. Regra de combinação entre afirmações** (`decisao.py`, combinação de `por_af`) — erra nas DUAS direções:
   (a) A com L=+2 e B com L=−5 → `alta`; (b) parte falsa abaixo de τ deixa a parte verdadeira decidir → `baixa`
   (caso `cr_lula_acabar_bets_que_criou`, hoje o único erro grave restante). Projete a regra, escreva os dois
   testes, só então implemente.
@@ -109,9 +113,9 @@ Números de referência já simulados estão em `REVIEW_2.md §3`.
   crava nível sozinha; o grave `cr_chico_cesar_proibiu_direita` sumiu). Se E3 for aprovada, título nem vota.
 - [ ] **B4. Agência sozinha nunca chega a alta** (R1+R11): REFUTA de agência curada vale como selo; com agência
   refutando, SUSTENTA de não-agência não vota.
-- [ ] **B5. Trava VAGO** só para sujeito genérico (economia, país, governo); hoje dispara em
+- [x] **B5. Trava VAGO** só para sujeito genérico (economia, país, governo); hoje dispara em
   "Ibuprofeno piora o quadro de dengue".
-- [ ] **B6. Independência** (`corroboracao.py`, `catalogo.py`): assinatura de agência não pode casar crédito de
+- [x] **B6. Independência** (`corroboracao.py`, `catalogo.py`): assinatura de agência não pode casar crédito de
   foto ("Folhapress"); aliases do mesmo portal = mesmo cluster; "curada" por host exato ou prefixo declarado
   (hoje `comentarios1.folha.uol.com.br` vale como Folha — visto de novo no eval de 05/10).
 - [ ] **Anti-overfitting**: os pesos do PR #11 (0,45/0,3) e as regras B3/B4 foram escolhidos olhando o dev.
