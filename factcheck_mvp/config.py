@@ -199,3 +199,8 @@ BUSCA_LER_MAX = _int("BUSCA_LER_MAX", 16)
 BUSCA_FORA_TEMA_FRACAO = _float("BUSCA_FORA_TEMA_FRACAO", 0.5)
 # Ondas extras por afirmação com o planejador (o padrão sem ele é AGENTE_MAX_ONDAS_EXTRAS = 1).
 BUSCA_EXTRAS_MAX = _int("BUSCA_EXTRAS_MAX", 3)
+# Missão F / A6: trava de similaridade no atalho do índice (trava_indice.py). Com 1 só cluster decidindo
+# por selo do índice, exige similaridade mínima (Dice, 0..1) entre a alegação checada e o núcleo da
+# afirmação; abaixo do limiar o nível tem teto "media". 0,6 = o `cobertura_min` do próprio índice.
+INDICE_TRAVA_SIMILARIDADE = _get("INDICE_TRAVA_SIMILARIDADE", "0").strip().lower() in ("1", "true", "sim", "on")
+INDICE_TRAVA_SIM_MIN = _float("INDICE_TRAVA_SIM_MIN", 0.6)

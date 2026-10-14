@@ -24,7 +24,7 @@ import unicodedata
 from typing import Any, Awaitable, Callable, Dict, List, Literal, Optional, Tuple
 
 from . import (afirmacoes, aplicabilidade, avaliador, confiabilidade, config, corroboracao, decisao, eval_modo,
-               juiz_llm, padroes_llm, replay, selos, telemetria)
+               juiz_llm, padroes_llm, replay, selos, telemetria, trava_indice)
 from . import agente as _agente
 from . import observabilidade
 from . import sintetizador  # Missão F / A2
@@ -181,6 +181,7 @@ class Pipeline:
                        "UNSLOTH_MODEL_NAME": config.UNSLOTH_MODEL_NAME or "(loaded=true de /models)",
                        "detector": getattr(self.detector, "nome", type(self.detector).__name__),
                        "INDICE_CHECAGENS": _indice.habilitado(),
+                       "INDICE_TRAVA_SIMILARIDADE": config.INDICE_TRAVA_SIMILARIDADE,
                        "TRAFEGO_LISTA": confiabilidade.metadados().get("lista"),
                        "TRAFEGO_RANK_MAX": config.TRAFEGO_RANK_MAX,
                        "AGENTE_MAX_BUSCAS": getattr(config, "AGENTE_MAX_BUSCAS", None),
@@ -593,7 +594,10 @@ class Pipeline:
                 origem_veredito=p.get("origem_veredito"), veiculo=p.get("veiculo") or p.get("dominio") or "",
                 confiabilidade=p.get("confiabilidade"), data_pub=p.get("data_pub"),
                 prob_fake_pagina=prob_fake,
-                data_pub_bruta=p.get("data_pub_bruta"), data_pub_precisao=p.get("data_pub_precisao")))
+                data_pub_bruta=p.get("data_pub_bruta"), data_pub_precisao=p.get("data_pub_precisao"),
+                alegacoes_checadas=(trava_indice.candidatas(p.get("afirmacao_checada"), p.get("titulo"),
+                                                            p.get("trecho"))
+                                    if p.get("origem_veredito") == "indice" else None)))  # Missão F / A6
         # E4 (I-4): janela e marco de cada afirmação saem da MESMA função do gate (`_fase_base`).
         marcas_af = [aplicabilidade.marcas_da_afirmacao(a.texto, texto_base, len(afs), ref) for a in afs]
         ev = decisao.Evidencias(
@@ -1123,6 +1127,8 @@ class Pipeline:
                               afirmacao=d.get("afirmacao"), data_pub=d.get("data_pub"),
                               data_pub_bruta=d.get("data_pub_bruta"), precisao=d.get("data_pub_precisao"),
                               r=d.get("r"), bits=d.get("bits_descartados"))
+        for t in dec.tetos_similaridade:  # Missão F / A6: selo do índice de 1 checagem cortado em media
+            telemetria.evento("trava", nome="indice_similaridade", **t)
         telemetria.evento("decisao", nivel=dec.nivel, nivel_agregador=nivel_agregador or dec.nivel, score=dec.log_odds,
                           sinais=[f"af{v.afirmacao}:{v.cluster}:{v.valor:+.2f}" for v in dec.votos],
                           why=dec.why_1linha(), travas=dec.resumo_trace(), decisao=dec.to_dict())

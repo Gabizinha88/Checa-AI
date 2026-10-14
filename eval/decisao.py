@@ -68,6 +68,7 @@ def evidencias_de_dict(d: Dict[str, Any]) -> decisao.Evidencias:
         veiculo=i.get("veiculo") or "",
         data_pub=i.get("data_pub"),
         prob_fake_pagina=i.get("prob_fake_pagina"),  # T6: opcional (snapshots antigos não têm)
+        alegacoes_checadas=i.get("alegacoes_checadas"),  # Missão F / A6: opcional (snapshots antigos não têm)
     ) for i in (d.get("itens") or [])]
     return decisao.Evidencias(
         afirmacoes=afs, itens=itens,
