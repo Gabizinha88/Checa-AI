@@ -41,7 +41,9 @@ from . import config, indice
 
 MIN_TERMOS = 3          # termos de conteúdo mínimos para uma candidata identificar uma alegação
 _MAX_FRASE = 300        # a 1ª frase do trecho é cortada aqui (trecho sem pontuação não vira "uma frase" gigante)
-_DESCRICAO_SELO = "selo"  # prefixo da descrição da contribuição de selo em `decisao._contribuicoes`
+# Prefixos da descrição (`decisao._contribuicoes`) dos votos que o índice sozinho sustenta: o selo e, desde B4/R1,
+# a postura REFUTA de agência curada (pesa como selo, 1,5): a mesma página do índice, com o mesmo poder de cravar.
+_DESCRICOES_DO_INDICE = ("selo", "postura REFUTA (agência)")
 
 
 def habilitada() -> bool:
@@ -91,7 +93,7 @@ def similaridade(nucleo: str, alegacoes: Sequence[str]) -> Tuple[float, Optional
 
 
 def _eh_selo_do_indice(item: Any, descricao: str) -> bool:
-    return getattr(item, "origem_veredito", None) == "indice" and descricao.startswith(_DESCRICAO_SELO)
+    return getattr(item, "origem_veredito", None) == "indice" and descricao.startswith(_DESCRICOES_DO_INDICE)
 
 
 def avaliar_teto(clusters: Dict[str, List[tuple]], L_a: float, tau: float,
@@ -100,8 +102,8 @@ def avaliar_teto(clusters: Dict[str, List[tuple]], L_a: float, tau: float,
     (o mesmo formato que `decisao._agregar` agrega). Devolve o registro do corte ou None (não agiu).
 
     Só age se: flag ligada; |L_a| ≥ τ; exatamente UM cluster vota na direção de L_a; o voto desse
-    cluster é decidido por um selo do índice cujo peso é necessário (sem ele o cluster ficaria abaixo
-    de τ); e a melhor similaridade entre as alegações checadas e o núcleo fica abaixo do limiar.
+    cluster é decidido por uma peça do índice (selo ou REFUTA de agência, B4/R1) cujo peso é necessário
+    (sem ela o cluster ficaria abaixo de τ); e a melhor similaridade entre as alegações checadas e o núcleo fica abaixo do limiar.
     Itens do índice sem `alegacoes_checadas` (None: snapshot antigo / peça sem esse dado) não são
     avaliados: sem dado não se corta."""
     if not habilitada() or abs(L_a) < tau:

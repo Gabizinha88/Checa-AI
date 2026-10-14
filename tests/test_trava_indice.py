@@ -162,7 +162,9 @@ def test_postura_sozinha_nao_e_alvo_e_nunca_chega_a_tau():
 def test_extremo_que_se_sustenta_sem_o_selo_nao_e_cortado(ligada, monkeypatch):
     # se a postura (fonte de outro peso) bastasse sozinha para passar de τ, o selo não seria necessário
     monkeypatch.setattr(decisao, "W_POSTURA", 2.0)
-    d = decidir(_ev([_selo("https://lupa.uol.com.br/a", VIZINHA)]))
+    itens = [_selo("https://lupa.uol.com.br/a", VIZINHA, cluster="mesmo"),
+             _postura("https://g1.globo.com/c", cluster="mesmo")]
+    d = decidir(_ev(itens))
     assert d.nivel == "alta" and not d.tetos_similaridade
 
 
@@ -243,3 +245,19 @@ def test_pipeline_mesma_checagem_com_flag_desligada_ou_alegacao_igual_decide(mon
                         "É falso que café cura câncer, segundo especialistas.")
     rel = _rodar_base(monkeypatch, igual, flag=True)
     assert rel.propensao == "alta" and not rel.decisao["tetos_similaridade"]
+
+
+# ------------------------------------------------------------------ B4/R1: REFUTA de agência pesa como selo
+def test_refuta_de_agencia_do_indice_sem_selo_tambem_tem_teto(ligada):
+    """Desde B4/R1 a postura REFUTA de agência curada pesa 1,5 e crava sozinha; vinda do índice, é a mesma
+    peça que o selo: a trava vale para ela também."""
+    item = _selo("https://lupa.uol.com.br/a", VIZINHA, veredito=None)
+    d = decidir(_ev([item]))
+    assert d.nivel == "media" and d.tetos_similaridade, d.votos
+    assert decidir(_ev([_selo("https://lupa.uol.com.br/a", PARAFRASE, veredito=None)])).nivel == "alta"
+
+
+def test_refuta_de_agencia_achada_na_web_nao_e_alvo(ligada):
+    item = _selo("https://lupa.uol.com.br/a", None, veredito=None, origem=None)
+    d = decidir(_ev([item]))
+    assert d.nivel == "alta" and not d.tetos_similaridade
