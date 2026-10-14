@@ -31,6 +31,14 @@ python3 -m eval.run --gate                           # exit 1 se piorar vs basel
 | `split` | não | `dev` (padrão, iterar aqui) \| `holdout` (só conferir no fim) |
 | `origem` | não | `sonda \| claimreview \| manual` |
 | `nota` | não | justificativa do rótulo |
+| `data_referencia` | não | `YYYY-MM-DD` = "hoje" do texto p/ relevância temporal (E4); vira `EntradaConsulta.data_referencia` |
+
+Padrão = relógio gravado no record (reproduz o que o sistema fez ao vivo no dia do
+record): em `replay` o pipeline lê a data do cassete `relogio://hoje`; cassete antigo
+sem relógio → E4 desligado com `fallback onde=relogio`. O campo `data_referencia` no
+caso é só quando o texto descreve um momento conhecido (ex.: = `data_checagem` de um
+caso ClaimReview), com justificativa na `nota`, decidido **antes** de rodar e registrado
+em `ITERACOES.md`; nunca mexer depois de ver o resultado.
 
 Mapeamento padrão (nível = propensão **a se tratar de desinformação**):
 
@@ -112,4 +120,78 @@ Compare os `metricas.json` (`acerto`, `n_erro_grave`, `taxa_indeterminada`, `ser
 as mesmas 2 da onda 1 + crítico pós-juiz com até `AGENTE_MAX_ONDAS_EXTRAS` ondas reescritas pelo
 LLM (teto `AGENTE_MAX_BUSCAS` por caso). No trace: `cli trace <run_id> --eventos agente,etapa`.
 
+## Medição do E4 (relevância temporal)
+
+`metricas.json` tem o bloco `e4` (também no nível 0, via `eval.decisao`):
+
+| campo | o quê |
+|---|---|
+| `casos_com_marcador` | casos cujo texto/afirmação tem marcador temporal relativo ("hoje", "ontem"…) ou data explícita do fato (marco, Task 4b: "dia 8", "8 de outubro") |
+| `casos_com_desconto` | casos com ≥1 fonte descontada (`descontos_temporais` não vazio) |
+| `casos_nivel_mudou` | casos em que o desconto mudou o nível (`nivel != nivel_sem_desconto`, só conta com desconto real) |
+| `bits_descartados_total` | soma dos `bits_descartados` (força da evidência removida por ser de outro episódio) |
+| `referencia_ausente` | casos sem `data_referencia` (E4 sem âncora: não mede) |
+
+Fallbacks do E4 no trace (contrato completo em `docs/TELEMETRIA.md`, §1):
+
+| `onde` | motivo | efeito |
+|---|---|---|
+| `relogio` | `data de referência não gravada` · `cassete sem data` | E4 desligado no caso (`referencia_ausente`) |
+| `data_pub` | `formato não reconhecido` · `sem âncora` (data relativa sem âncora) | a fonte fica sem data e sem desconto temporal |
+| `config` | aviso de `E4_*` inválido (não é inteiro > 0) | usa o default, com rastro |
+
+O evento `fonte` com `estagio=aplicabilidade` (1 por par peça × afirmação na fase base) traz `janela`,
+`marco`, `excedente` e `referencia`. `_e4_do_trace` lê `janela` e `marco` por afirmação do evento
+`evidencias`, o mesmo critério do `marcador` de `eval.decisao`.
+
+A/B honesto sem flag no código de produto — a perna controle zera `texto_usuario`/`janela`
+antes do `decidir` (o E4 desliga por construção, pois `dias_excedentes` não mede sem marcador):
+
+```bash
+python3 -m eval.decisao --snapshot eval/snapshots/e4-sub20.jsonl            # com E4
+python3 -m eval.decisao --snapshot eval/snapshots/e4-sub20.jsonl --sem-e4   # controle
+```
+
+Snapshot a partir de um eval de pipeline (Task 8: traces com evento `evidencias`):
+
+```bash
+python3 -m eval.decisao --gerar-snapshot --resultado eval/resultados/<ts>-nome \
+  --saida eval/snapshots/e4-sub20.jsonl
+```
+
+(lê `casos.jsonl` do resultado → `run_id` → evento `evidencias` do trace via
+`decisao_gerar.evidencias_do_trace`; pula casos sem run ou sem evento `decisao`.)
+Trace antigo, sem `evidencias`: a linha é **reconstruída** do evento `decisao` (sem
+`texto_usuario`/`data_referencia`, então E4 não vale nela). A origem do selo vem do próprio trace
+(`selo X (pagina|indice)` no voto); selo que entrou em conflito ou foi aplicado sem aparecer no voto
+sai como `indice` (`conflitos`/`vereditos_aplicados`); sem registro, cai em `pagina` (default
+documentado). O comando informa os reconstruídos à parte.
+**Atenção:** a reconstrução de traces antigos pode DIVERGIR da decisão original. O trace não guarda a
+origem de todo selo (um selo de origem desconhecida vota igual a `indice`, mas o default `pagina` não
+vota) e não guarda `texto_usuario` nem `data_referencia` (o E4 não vale nela). Para medir decisão com
+fidelidade, use os snapshots de runs com evento `evidencias`.
+
 Testes do harness: `tests/test_eval_harness.py` (Pipeline falso, sem rede).
+
+## Simulação honesta (auditoria E, A1)
+
+Os 78% da simulação de 13/10 eram em boa parte circulares: em 26 dos 28 casos resolvidos pelo índice, a evidência
+era a própria `url_checagem` do caso. Para medir a busca de verdade:
+
+```bash
+# API em modo de avaliação (EVAL_MODO=1 liga os campos eval_* do POST /checar; nunca em produção)
+EVAL_MODO=1 IO_MODO=record TELEMETRIA_PROMPTS=1 INDICE_CHECAGENS=1 SERP_ENGINE=google_news   .venv/Scripts/python.exe -m uvicorn factcheck_mvp.api:app --port 8000
+python3 scripts/simular_usuario.py --n 50 --seed 42 --excluir-fonte --repeticoes 3 --rotulo base --confirmar --max-buscas 55
+python3 -m eval.comparar_simulacoes reports/simulacao_A reports/simulacao_B --nomes base,final --runs runs
+```
+
+- `--excluir-fonte`: a `url_checagem` do caso vai em `eval_excluir_urls` e o pipeline a trata como inexistente no
+  índice e nos resultados da web (URL normalizada: sem esquema, `www.`, query e barra final; evento `eval_exclusao`).
+  Fica de fora só a fonte de onde a frase saiu: outras checagens do mesmo fato continuam valendo.
+- `--repeticoes K`: cada frase K vezes. A repetição 0 usa os cassetes de sempre; as demais salgam o cassete do juiz
+  (`replay.com_sal`), então o juiz é uma amostra nova a cada repetição, enquanto as buscas vêm do cassete.
+  Cada execução tem o seu `run_id` em `dados.json`; `parcial.jsonl` na pasta é o checkpoint.
+- `eval/comparar_simulacoes.py`: acerto com IC95 de Wilson por categoria, caminho (base x web) e geral, `antigas` à
+  parte, erro grave, mudança de nível entre repetições, McNemar pareado (células e casos) e, com `--runs`, % de itens
+  do juiz com frase de veredito no trecho, consultas vazias e casos que acharam alguma agência.
+- Sem `EVAL_MODO=1` os campos `eval_*` são ignorados (com `fallback onde=eval`).

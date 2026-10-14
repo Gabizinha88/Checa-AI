@@ -1,13 +1,16 @@
 """Quebra do input em afirmações verificáveis (JSON), preservando idioma e polaridade.
 
 Saída do LLM (validada com Pydantic, 1 retry com correção):
-    [{"afirmacao": str, "nucleo": str, "polaridade": "afirma"|"nega", "consulta": str}]
+    [{"afirmacao": str, "nucleo": str, "polaridade": "afirma"|"nega", "consulta": str,
+      "marcadores_tempo": [str]}]
 
 - `afirmacao`: o que o USUÁRIO afirma, em português, com a polaridade dele
   ("É falso que a vacina altera o DNA" → "A vacina não altera o DNA").
 - `nucleo`: a alegação na forma afirmativa ("A vacina altera o DNA"): é o que o
   juiz e os selos avaliam; `polaridade="nega"` faz a decisão inverter a direção.
 - `consulta`: 5-8 palavras-chave em PT para a busca ("vacina covid altera DNA").
+- `marcadores_tempo` (Missão F / item 7): "hoje", "acabou de sair"... fora do núcleo e da consulta; a
+  `afirmacao` os preserva e a regra de data E4 os lê (`Afirmacao.texto_temporal`).
 
 Nunca devolve vazio para entrada válida: CAIXA ALTA e pontuação excessiva são
 normalizadas antes; LLM vazio/inválido → fallback determinístico, marcado como
@@ -22,7 +25,7 @@ from typing import List, Literal, Optional
 
 from pydantic import BaseModel, TypeAdapter, field_validator
 
-from . import config, llm, telemetria
+from . import aplicabilidade, config, llm, telemetria
 from .schemas import Afirmacao
 
 # ----------------------------------------------------------------------------- normalização
@@ -147,12 +150,107 @@ def _moldura_negacao(texto: str) -> Optional[str]:
     return _cap(x) if len(x) >= 5 else None
 
 
+# ----------------------------------------------------------------------------- limpeza (Missão F / item 7)
+# Marcadores relativos de tempo: dizem QUANDO o fato ocorreu para quem escreve (regra de data E4), não
+# QUAL é o fato. Dentro do núcleo vão ao juiz e ao índice; dentro da consulta zeram o AND do Google News.
+_TEMPO = (r"acab(?:ou|a)(?:\s+de)?\s+sair|acab(?:ou|a)\s+de|h[áa]\s+(?:pouco|instantes|poucas\s+horas)|"
+          r"(?:nesta|esta)\s+(?:manh[ãa]|tarde|noite|madrugada|semana)|neste\s+m[êe]s|semana\s+passada|"
+          r"anteontem|ontem|hoje|agora")
+# Fora de "até hoje", "a partir de agora", "nos dias de hoje", "hoje em dia", "há pouco mais de" (quantidade).
+_RE_TEMPO = re.compile(
+    r"(?<![\wÀ-ÿ])(?<!até )(?<!ate )(?<!partir de )(?<!de )(" + _TEMPO + r")(?![\wÀ-ÿ])"
+    r"(?!\s+em\s+(?:dia|diante)\b)(?!\s+(?:mais|menos)\s+(?:de|que)\b)", re.I)
+_TEMPO_ENTRE_VIRGULAS = re.compile(r"\s*,\s*(?:" + _TEMPO + r")\s*,\s*", re.I)  # "O ministro, hoje, foi preso"
+_TEMPO_INICIAL = re.compile(r"^\s*(?:" + _TEMPO + r")\s*[:,;–—-]\s*", re.I)
+_ACABOU_SAIR_QUE = re.compile(
+    r"^\s*acab(?:ou|a)(?:\s+de)?\s+sair\s+(?:a\s+)?(?:not[ií]cia|informa[çc][ãa]o|confirma[çc][ãa]o)\s*"
+    r"(?:de\s+)?(?:que\s+|:\s*)", re.I)
+# Moldura de entrega ("Me mandaram isso:", "Vi um post dizendo que"): como a mensagem chegou, não o fato.
+_MOLDURA_ENTREGA = re.compile(
+    r"^\s*(?:me\s+(?:mandaram|enviaram|passaram|encaminharam)|recebi|acabei\s+de\s+(?:receber|ver|ler)|vi|li|ouvi)"
+    r"(?:\s+(?:isso|aquilo|(?:essa|esta|esse|este|uma|um|o|a)\s+(?:mensagem|post|postagem|v[ií]deo|[áa]udio|"
+    r"texto|foto|print|imagem|not[ií]cia|corrente|story|reel)))?"
+    r"(?:\s+aqui)?(?:\s+(?:no|na|do|da|pelo|pela)\s+[\wÀ-ÿ]+)?"
+    r"(?:\s*:\s*|\s*,\s*|\s+(?:dizendo|falando|afirmando|contando|avisando|informando|mostrando)(?:\s+que)?\s+|"
+    r"\s+que\s+)", re.I)
+# Ruído da consulta: veredito/pergunta, negação (a consulta é o tema, afirmativa), verbo de relato e "vídeo mostra".
+_RE_RUIDO_CONSULTA = re.compile(
+    r"(?<![\wÀ-ÿ])(?:é|n[ãa]o|nunca|jamais|nem|verdade|verdadeiro|falso|falsa|fake|boato|mentira|checagem|"
+    r"disse|disseram|diz|dizem|dizendo|afirma|afirmou|afirmam|afirmando|mostra|mostram|mostrando|segundo|"
+    r"circula|circulando|not[ií]cia|mensagem|mandaram|post)(?![\wÀ-ÿ])", re.I)
+_RE_VIDEO_MOSTRA = re.compile(
+    r"(?<![\wÀ-ÿ])(?:v[ií]deos?|[áa]udios?|print|post|foto|imagem|texto)\s+"
+    r"(?:mostra|mostram|mostrando|diz|dizem|dizendo|afirma|afirmando|circula|viraliza)(?![\wÀ-ÿ])", re.I)
+
+
+def marcadores_do_texto(texto: str) -> List[str]:
+    """Marcadores relativos de tempo achados no texto, na ordem, minúsculos e sem repetir."""
+    achados: List[str] = []
+    for m in _RE_TEMPO.finditer(texto or ""):
+        t = re.sub(r"\s+", " ", m.group(1).lower())
+        if t not in achados:
+            achados.append(t)
+    return achados
+
+
+def _arrumar(t: str) -> str:
+    t = re.sub(r"\s+([,;:.!?])", r"\1", t)
+    t = re.sub(r",(\s*,)+", ",", t)
+    t = re.sub(r"\s+", " ", t).strip(" ,;:–—-")
+    return _cap(t)
+
+
+def tirar_tempo_e_moldura(frase: str) -> tuple[str, List[str]]:
+    """(frase sem moldura de entrega nem marcador de tempo, marcadores achados). Determinístico.
+    Se a limpeza deixaria pouco (< 3 palavras), devolve a frase original: melhor ruído que perder o fato."""
+    original = (frase or "").strip()
+    marcadores = marcadores_do_texto(original)
+    t = _MOLDURA_ENTREGA.sub("", original, count=1)
+    t = _TEMPO_INICIAL.sub("", t, count=1)
+    t = _TEMPO_ENTRE_VIRGULAS.sub(" ", t)
+    t = _ACABOU_SAIR_QUE.sub("", t, count=1)
+    t = _RE_TEMPO.sub(" ", t)
+    t = _arrumar(t)
+    return (t, marcadores) if len(t.split()) >= 3 else (original, marcadores)
+
+
+def limpar_consulta(consulta: str) -> str:
+    """Consulta sem marcadores de tempo, moldura, veredito, negação e verbos de relato (o Google News
+    exige TODOS os termos: uma palavra de ruído zera a busca; auditoria E, 4.2)."""
+    c = _RE_VIDEO_MOSTRA.sub(" ", consulta or "")
+    c = _RE_TEMPO.sub(" ", c)
+    c = _RE_RUIDO_CONSULTA.sub(" ", c)
+    return re.sub(r"\s+", " ", c).strip()
+
+
+def _marcadores_validos(*fontes) -> List[str]:
+    """Une marcadores (do LLM e da regra), mantendo só os que a regra de data E4 reconhece como
+    marcador (`aplicabilidade.marcador_temporal`); sem repetir, no máximo 5."""
+    saida: List[str] = []
+    for lista in fontes:
+        for m in lista or []:
+            m = re.sub(r"\s+", " ", str(m or "")).strip(" :,;.-").lower()
+            if 0 < len(m) <= 40 and m not in saida and aplicabilidade.marcador_temporal(m) is not None:
+                saida.append(m)
+    return saida[:5]
+
+
 # ----------------------------------------------------------------------------- LLM
 class _ItemLLM(BaseModel):
     afirmacao: str
     nucleo: str = ""
     polaridade: Literal["afirma", "nega"] = "afirma"
     consulta: str = ""
+    marcadores_tempo: List[str] = []
+
+    @field_validator("marcadores_tempo", mode="before")
+    @classmethod
+    def _marc(cls, v):
+        if v is None or v == "":
+            return []
+        if isinstance(v, str):
+            return [v]
+        return [str(x) for x in v] if isinstance(v, (list, tuple)) else []
 
     @field_validator("polaridade", mode="before")
     @classmethod
@@ -164,22 +262,32 @@ class _ItemLLM(BaseModel):
 _INSTRUCAO = """Extraia as afirmações factuais verificáveis do TEXTO (português do Brasil).
 
 Responda SOMENTE com um array JSON, sem texto antes ou depois. Cada item:
-{{"afirmacao": "...", "nucleo": "...", "polaridade": "afirma" ou "nega", "consulta": "..."}}
+{{"afirmacao": "...", "nucleo": "...", "polaridade": "afirma" ou "nega", "consulta": "...", "marcadores_tempo": []}}
 
 Regras:
-1. "afirmacao": o que o TEXTO afirma, em português, com as palavras do texto, frase autocontida (sem pronomes soltos). Não acrescente fatos. NUNCA traduza para outro idioma. Preserve números e datas exatamente como estão (ex.: "30 mil", "2022").
-2. Negação: se o TEXTO nega uma alegação ("É falso que X", "Não é verdade que X", "X não faz Y"), "afirmacao" mantém a negação, "nucleo" é a alegação X na forma afirmativa (sem a negação) e "polaridade" é "nega". Se não há negação, "nucleo" repete "afirmacao" e "polaridade" é "afirma".
-3. Fala atribuída a pessoa ou órgão identificado ("Fulano disse que X", "o ministro afirmou que X"): a afirmação verificável é "Fulano disse que X" — mantenha o autor, porque o que se checa é se ele disse. Relato genérico ("circula vídeo afirmando X", "dizem que X") e pergunta ("É verdade que X?"): a afirmação verificável é X.
-4. "consulta": 5 a 8 palavras-chave em português, tiradas do núcleo, para buscar o tema no Google (se o núcleo for curto, use todas as palavras importantes dele). Mantenha os acentos. Não invente termos que não estão no texto. Sem aspas, sem operadores, sem as palavras "falso", "verdade", "boato".
-5. Ignore saudações, apelos ("compartilhe", "urgente") e opiniões. No máximo {n} itens. Se não houver nenhuma afirmação factual, responda [].
+1. "afirmacao": o que o TEXTO afirma, em português, com as palavras do texto, frase autocontida (sem pronomes soltos). Não acrescente fatos. NUNCA traduza para outro idioma. Preserve números, datas e marcadores de tempo exatamente como estão (ex.: "30 mil", "2022", "hoje", "agora", "acabou de sair", "ontem").
+2. Negação: se o TEXTO nega uma alegação ("É falso que X", "Não é verdade que X", "X não faz Y"), "afirmacao" mantém a negação, "nucleo" é a alegação X na forma afirmativa (sem a negação) e "polaridade" é "nega". Se não há negação, "nucleo" repete "afirmacao" (sem os marcadores de tempo, regra 5) e "polaridade" é "afirma". A negação conta mesmo dentro de aspas ou depois de uma moldura ("Recebi isso: “É falso que X”" → polaridade "nega"). A pergunta final ("é verdade?") não é negação. Mas se a negação está DENTRO da oração relatada de uma atribuição ("a PF concluiu que não teve corrupção", "Fulano disse que não vai disputar"), ela faz parte do que foi atribuído: "afirmacao" e "nucleo" mantêm a frase inteira, com a negação, e a polaridade é "afirma". "nega" é só para quando o TEXTO rejeita a alegação.
+3. Moldura x atribuição. (a) Descarte a MOLDURA de como a mensagem chegou ("me mandaram", "vi um post", "recebi no grupo", "estão compartilhando") e as perguntas ("é verdade?", "dá pra confiar?"): extraia só o conteúdo que ela traz. (b) PRESERVE a atribuição quando o conteúdo diz que uma pessoa, órgão ou estudo disse, escreveu, chamou, decidiu, concluiu ou mostrou algo ("Fulano disse que X", "a PF concluiu X", "estudo aponta X"): a afirmação e o núcleo são a frase inteira, com o autor — mantenha o autor, porque o que se checa é se ele de fato o fez. Só remova o relator quando for mera circulação sem autor identificado ("circula um áudio afirmando X", "dizem que X" → X).
+4. "consulta": 5 a 8 palavras-chave em português, tiradas do núcleo, para buscar o tema no Google Notícias, que exige TODOS os termos (se o núcleo for curto, use todas as palavras importantes dele). Mantenha os acentos. Não invente termos que não estão no texto. Sem aspas, sem operadores e sem palavras-ruído: marcadores de tempo, moldura de entrega, "é verdade", "fake", "falso", "boato", "não" e verbos de relato sem autor ("mostra", "circula").
+5. "nucleo" NÃO leva marcadores de tempo ("agora", "hoje", "ontem", "acabou de sair", "Agora:") nem moldura de entrega: eles dizem quando ou como a mensagem chegou, não qual é o fato. "marcadores_tempo" é a lista dos marcadores relativos de tempo do TEXTO que se referem a esta afirmação, como aparecem (ex.: ["hoje"]); [] se não há. Não coloque aí moldura de entrega nem datas absolutas.
+6. Ignore saudações, apelos ("compartilhe", "urgente") e opiniões. No máximo {n} itens. Se não houver nenhuma afirmação factual, responda [].
+7. Uma afirmação por alegação. Uma frase com várias orações (separadas por vírgula, "e", "enquanto", "só") que descreve um único acontecimento ou uma comparação é UMA afirmação: mantenha a frase inteira (causa e efeito, detalhes do mesmo fato, um boato contado em várias frases, o relato mais o seu conteúdo). Se a mesma frase traz duas ou mais alegações INDEPENDENTES (cada uma pode ser verdadeira ou falsa sozinha, sobre fatos ou sujeitos diferentes), devolva uma afirmação para cada, cada uma autocontida. NÃO divida quando as partes formam uma alegação só.
 
 Exemplos:
 TEXTO: "É falso que beber água gelada causa gripe"
-[{{"afirmacao": "Beber água gelada não causa gripe", "nucleo": "Beber água gelada causa gripe", "polaridade": "nega", "consulta": "beber água gelada causa gripe"}}]
-TEXTO: "o Sérgio Sacani disse que são os idosos que vão decidir a eleição de 2026"
-[{{"afirmacao": "Sérgio Sacani disse que são os idosos que vão decidir a eleição de 2026", "nucleo": "Sérgio Sacani disse que são os idosos que vão decidir a eleição de 2026", "polaridade": "afirma", "consulta": "Sérgio Sacani idosos decidir eleição 2026"}}]
+[{{"afirmacao": "Beber água gelada não causa gripe", "nucleo": "Beber água gelada causa gripe", "polaridade": "nega", "consulta": "beber água gelada causa gripe", "marcadores_tempo": []}}]
+TEXTO: "Estão compartilhando: “O ministro disse que não haverá aumento do imposto.” Isso procede?"
+[{{"afirmacao": "O ministro disse que não haverá aumento do imposto", "nucleo": "O ministro disse que não haverá aumento do imposto", "polaridade": "afirma", "consulta": "ministro aumento imposto", "marcadores_tempo": []}}]
+TEXTO: "Recebi no grupo: “Fulano disse que os idosos vão decidir a eleição.” Alguém sabe se é verdade?"
+[{{"afirmacao": "Fulano disse que os idosos vão decidir a eleição", "nucleo": "Fulano disse que os idosos vão decidir a eleição", "polaridade": "afirma", "consulta": "Fulano idosos decidir eleição", "marcadores_tempo": []}}]
 TEXTO: "Prefeitura do Recife abriu 30 mil vagas de emprego em 2025"
-[{{"afirmacao": "A Prefeitura do Recife abriu 30 mil vagas de emprego em 2025", "nucleo": "A Prefeitura do Recife abriu 30 mil vagas de emprego em 2025", "polaridade": "afirma", "consulta": "Prefeitura Recife 30 mil vagas emprego 2025"}}]
+[{{"afirmacao": "A Prefeitura do Recife abriu 30 mil vagas de emprego em 2025", "nucleo": "A Prefeitura do Recife abriu 30 mil vagas de emprego em 2025", "polaridade": "afirma", "consulta": "Prefeitura Recife 30 mil vagas emprego 2025", "marcadores_tempo": []}}]
+TEXTO: "Me mandaram um áudio: agora a empresa Alfa anunciou que vai demitir mil funcionários"
+[{{"afirmacao": "Agora a empresa Alfa anunciou que vai demitir mil funcionários", "nucleo": "A empresa Alfa anunciou que vai demitir mil funcionários", "polaridade": "afirma", "consulta": "empresa Alfa demitir mil funcionários", "marcadores_tempo": ["agora"]}}]
+TEXTO: "A ponte nova de Beta caiu e o prefeito de Gama foi preso"
+[{{"afirmacao": "A ponte nova de Beta caiu", "nucleo": "A ponte nova de Beta caiu", "polaridade": "afirma", "consulta": "ponte nova Beta caiu", "marcadores_tempo": []}}, {{"afirmacao": "O prefeito de Gama foi preso", "nucleo": "O prefeito de Gama foi preso", "polaridade": "afirma", "consulta": "prefeito Gama preso", "marcadores_tempo": []}}]
+TEXTO: "Circula um vídeo dizendo que o chá de erva Delta cura a gripe em dois dias, e que isso foi provado por uma universidade"
+[{{"afirmacao": "O chá de erva Delta cura a gripe em dois dias, segundo estudo de uma universidade", "nucleo": "O chá de erva Delta cura a gripe em dois dias, segundo estudo de uma universidade", "polaridade": "afirma", "consulta": "chá erva Delta cura gripe dois dias", "marcadores_tempo": []}}]
 
 TEXTO: \"\"\"
 {texto}
@@ -234,20 +342,27 @@ def _via_llm(texto: str, max_n: int) -> tuple[List[Afirmacao], str]:
             pol, nucleo = ("nega", derivado) if derivado else ("afirma", af)
         if pol == "afirma":
             nucleo = nucleo if nucleo and not _parece_ingles(nucleo) else af
+        marcadores = _marcadores_validos(it.marcadores_tempo, marcadores_do_texto(af))
+        if config.EXTRATOR_LIMPEZA:  # Missão F / item 7: núcleo sem tempo nem moldura (a afirmação os mantém)
+            nucleo = tirar_tempo_e_moldura(nucleo)[0]
         consulta = (it.consulta or "").strip() or palavras_chave(nucleo)
         if len(consulta.split()) > 10:
             consulta = palavras_chave(consulta, 8)
         # A consulta é o TEMA: sem palavras de veredito (senão a busca vira "falso vacina…")
         consulta = re.sub(r"(?i)\b(falso|falsa|verdade|verdadeiro|boato|fake|mentira|checagem)\b", " ", consulta)
         consulta = re.sub(r"\s+", " ", consulta).strip() or palavras_chave(nucleo)
+        if config.EXTRATOR_LIMPEZA:
+            consulta = limpar_consulta(consulta)
+            if len(consulta.split()) < 2:  # a limpeza esvaziou a consulta: palavras do núcleo limpo
+                consulta = limpar_consulta(palavras_chave(nucleo)) or palavras_chave(nucleo)
         inventadas = _termos_inventados(consulta, f"{texto} {nucleo}")
         if inventadas:
             # Iteração 1: "Café cura câncer" -> "cafe cura cancer onco terapia" levou a busca a Google Books.
             telemetria.fallback("afirmacoes.consulta", f"consulta do LLM com termos fora do texto {inventadas}: "
                                 "palavras-chave do núcleo", consulta_llm=consulta)
-            consulta = palavras_chave(nucleo)
+            consulta = limpar_consulta(palavras_chave(nucleo)) if config.EXTRATOR_LIMPEZA else palavras_chave(nucleo)
         saida.append(Afirmacao(texto=af[:500], indice=len(saida), nucleo=nucleo[:500],
-                               polaridade=pol, consulta=consulta[:200]))
+                               polaridade=pol, consulta=consulta[:200], marcadores_tempo=marcadores))
     return saida, f"{res.motor}:{res.modelo}"
 
 
@@ -270,8 +385,14 @@ def _fallback(texto: str, max_n: int) -> List[Afirmacao]:
             nucleo, pol = x, "nega"
         elif _tirar_nao(p):
             nucleo, pol = _tirar_nao(p), "nega"
+        marcadores = _marcadores_validos(marcadores_do_texto(p))
+        if config.EXTRATOR_LIMPEZA:
+            nucleo = tirar_tempo_e_moldura(nucleo)[0]
+        consulta = palavras_chave(nucleo)
+        if config.EXTRATOR_LIMPEZA:
+            consulta = limpar_consulta(consulta) or consulta
         saida.append(Afirmacao(texto=p[:500], indice=len(saida), nucleo=nucleo[:500], polaridade=pol,
-                               consulta=palavras_chave(nucleo)))
+                               consulta=consulta, marcadores_tempo=marcadores))
     return saida
 
 

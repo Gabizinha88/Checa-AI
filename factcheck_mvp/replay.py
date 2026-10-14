@@ -41,9 +41,11 @@ import contextvars
 import hashlib
 import json as _json
 import os
+import re
 import sys
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -51,7 +53,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import curl_cffi.requests
 from curl_cffi.requests.exceptions import RequestException as _CurlRequestException
 
-from . import telemetria
+from . import observabilidade, telemetria
 
 MODOS = ("live", "record", "replay")
 _SEGREDOS_QUERY = {"api_key", "apikey", "api-key", "key", "token", "access_token",
@@ -120,6 +122,36 @@ class modo:
             _modo_ctx.reset(self._tok)
         except (ValueError, RuntimeError):
             _modo_ctx.set(None)
+        return False
+
+
+# Sal do cassete do LLM (auditoria E, A1/A3): quando definido, as chamadas de `FINALIDADES_COM_SAL` entram na
+# chave do cassete com o sal, então uma repetição (ou um voto extra da autoconsistência) não reaproveita o
+# julgamento gravado pelas outras: é uma amostra nova do modelo. Sem sal, a chave é a de sempre.
+FINALIDADES_COM_SAL = ("juiz", "sintetizador")
+_sal_llm: contextvars.ContextVar = contextvars.ContextVar("replay_sal_llm", default="")
+
+
+def sal_atual() -> str:
+    return _sal_llm.get()
+
+
+class com_sal:
+    """`with com_sal("rep1"):` acrescenta ao sal vigente (contexto async-safe; `asyncio.to_thread` herda)."""
+
+    def __init__(self, sufixo: str):
+        self.novo = ":".join(x for x in (_sal_llm.get(), sufixo) if x)
+        self._tok = None
+
+    def __enter__(self):
+        self._tok = _sal_llm.set(self.novo)
+        return self
+
+    def __exit__(self, *a):
+        try:
+            _sal_llm.reset(self._tok)
+        except (ValueError, RuntimeError):
+            _sal_llm.set("")
         return False
 
 
@@ -443,8 +475,18 @@ def _reservar_serpapi(url: str) -> None:
                     {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "run_id": rid,
                      "engine": dict(parse_qsl(urlsplit(url).query)).get("engine"), "q": q[:120]})
                 tmp = arq.with_suffix(f".{os.getpid()}.tmp")
-                tmp.write_text(_json.dumps(uso, ensure_ascii=False, indent=1), encoding="utf-8")
-                os.replace(tmp, arq)
+                # Pasta sincronizada (OneDrive) pode negar o os.replace por instantes (PermissionError): tenta de
+                # novo e, se não der, a contagem local é perdida mas a BUSCA segue (auditoria de 13/10).
+                for tentativa in range(4):
+                    try:
+                        tmp.write_text(_json.dumps(uso, ensure_ascii=False, indent=1), encoding="utf-8")
+                        os.replace(tmp, arq)
+                        break
+                    except OSError as e:
+                        if tentativa == 3:
+                            telemetria.fallback("serpapi.contador", f"{type(e).__name__}: {e}"[:200])
+                        else:
+                            time.sleep(0.15 * (tentativa + 1))
         _usadas_processo += 1
 
 
@@ -495,8 +537,10 @@ def _do_cassete(m: str, metodo: str, k: str, url: str, max_bytes: Optional[int])
 
 
 def _executar(metodo: str, url_chave: str, corpo_chave: Any, ao_vivo: Callable[[], Resposta],
-              max_bytes: Optional[int] = None) -> Resposta:
+              max_bytes: Optional[int] = None, sal_chave: str = "") -> Resposta:
     m = _modo_efetivo(url_chave)
+    if sal_chave:  # amostra independente do LLM: o sal entra na chave do cassete
+        corpo_chave = {"__sal__": sal_chave, "corpo": corpo_chave}
     k = chave(metodo, url_chave, corpo_chave)
     resp = _do_cassete(m, metodo, k, url_chave, max_bytes)
     if resp is not None:
@@ -558,8 +602,8 @@ def _esperar_limite_openrouter() -> None:
         time.sleep(espera)
 
 
-def http_post(url: str, json: Any = None, **kw: Any) -> Resposta:  # noqa: A002 (espelha requests)
-    """POST síncrono (curl_cffi). Corpo JSON entra na chave (headers não)."""
+def http_post(url: str, json: Any = None, sal: str = "", **kw: Any) -> Resposta:  # noqa: A002 (espelha requests)
+    """POST síncrono (curl_cffi). Corpo JSON entra na chave (headers não); `sal` também (ver `sal_atual`)."""
     def _vivo() -> Resposta:
         args = _args_curl(kw)
         if json is not None:
@@ -581,7 +625,7 @@ def http_post(url: str, json: Any = None, **kw: Any) -> Resposta:  # noqa: A002 
             telemetria.evento("rate_limit", alvo="openrouter", http=429, espera_s=espera)
             time.sleep(espera)
         return _de_resposta(r, url)
-    return _executar("POST", url, json, _vivo)
+    return _executar("POST", url, json, _vivo, sal_chave=sal)
 
 
 async def ahttp_get(url: str, max_bytes: Optional[int] = None, headers: Optional[Dict[str, str]] = None,
@@ -670,20 +714,55 @@ def _saida_chat(d: Any) -> str:
         return ""
 
 
+# Missão F / A3 (autoconsistência): temperatura própria das repetições do juiz. A chave de cassete distinta por
+# repetição vem do sal (`com_sal`, A1); aqui só se garante amostragem > 0 (a temperatura entra no payload).
+_temperatura_ctx: contextvars.ContextVar[Optional[float]] = contextvars.ContextVar("llm_temperatura", default=None)
+
+
+class temperatura:
+    """`with temperatura(0.5):` — as chamadas `llm_post` do bloco (chat com `messages`) saem com essa temperatura.
+    Fora do bloco o payload fica intacto (chaves de cassete antigas valem)."""
+
+    def __init__(self, valor: float):
+        self.valor = float(valor)
+        self._tok = None
+
+    def __enter__(self):
+        self._tok = _temperatura_ctx.set(self.valor)
+        return self
+
+    def __exit__(self, *a):
+        try:
+            _temperatura_ctx.reset(self._tok)
+        except (ValueError, RuntimeError):
+            _temperatura_ctx.set(None)
+        return False
+
+
 def llm_post(url: str, payload: Dict[str, Any], headers: Optional[Dict[str, str]] = None,
              timeout: float = 60, motor: str = "", finalidade: Optional[str] = None,
              extrair: Optional[Callable[[Any], str]] = None) -> Resposta:
     """POST de LLM via http_post + evento `llm` (motor, modelo, finalidade…)."""
     fin = finalidade or telemetria.finalidade_atual() or _inferir_finalidade()
+    temp = _temperatura_ctx.get()
+    if temp is not None and isinstance(payload, dict) and "messages" in payload:
+        payload = {**payload, "temperature": temp}
     prompt = payload.get("messages") if isinstance(payload, dict) else None
     if prompt is None and isinstance(payload, dict):
         prompt = {k: v for k, v in payload.items() if k != "model"}
     prompt_txt = _json.dumps(prompt, ensure_ascii=False, sort_keys=True, default=str)
     base = {"motor": motor, "modelo": (payload or {}).get("model"), "finalidade": fin,
             "prompt_sha": telemetria.sha_curto(prompt_txt), "n_chars_prompt": len(prompt_txt)}
+    if telemetria.prompts_habilitados():  # TELEMETRIA_PROMPTS=1: o prompt inteiro, para auditar
+        base["prompt"] = prompt
+    if temp is not None:
+        base["temperatura"] = temp
     kw: Dict[str, Any] = {"timeout": timeout}
     if headers is not None:
         kw["headers"] = headers
+    if fin in FINALIDADES_COM_SAL and _sal_llm.get():
+        kw["sal"] = _sal_llm.get()
+        base["sal"] = kw["sal"]
     t0 = time.perf_counter()
     try:
         r = http_post(url, json=payload, **kw)
@@ -694,14 +773,83 @@ def llm_post(url: str, payload: Dict[str, Any], headers: Optional[Dict[str, str]
         raise
     lat = round((time.perf_counter() - t0) * 1000, 1)
     saida, erro = "", None
+    extras: Dict[str, Any] = {}  # Missão F / 8: tokens, custo e motivo de parada, quando o provedor devolve
     if r.status_code >= 400:
         erro = f"HTTP {r.status_code}: {r.text[:300]}"
     else:
         try:
             d = r.json()
             saida = (extrair or _saida_chat)(d)
+            extras = {k: v for k, v in (("usage", observabilidade.usage_da_resposta(d)),
+                                        ("finish_reason", observabilidade.finish_reason_da_resposta(d)))
+                      if v is not None}
         except Exception as e:
             erro = f"resposta não-JSON: {e}"[:300]
     telemetria.evento("llm", **base, latencia_ms=lat, saida=saida, erro=erro, cache=r.cache,
-                      status=r.status_code)
+                      status=r.status_code, **extras)
     return r
+
+
+# --------------------------------------------------------------------------
+# Relógio determinístico (E4 — data de referência do texto)
+
+RELOGIO_URL = "relogio://hoje"
+_DATA_ISO_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+
+
+def _hoje_brt_iso() -> str:
+    """Data atual em UTC−3 (BRT, sem zoneinfo: UTC menos 3 h) como YYYY-MM-DD."""
+    return (datetime.now(timezone.utc) - timedelta(hours=3)).date().isoformat()
+
+
+def _data_do_cassete(k: str) -> tuple[Optional[str], bool]:
+    """(YYYY-MM-DD gravado ou None, cassete existe). Sem arquivo -> (None, False). Arquivo que não é
+    um cassete de relógio legível (JSON quebrado, raiz ou `resp` que não é objeto, texto/base64
+    inválido, data ilegível) -> (None, True): o arquivo existe, mas não tem data. Nunca levanta."""
+    arq = _caminho(k)
+    if not arq.is_file():
+        return None, False
+    try:
+        doc = _json.loads(arq.read_text(encoding="utf-8"))
+        if not isinstance(doc, dict) or not isinstance(doc.get("resp"), dict):
+            return None, True
+        corpo = _ler(k, RELOGIO_URL).json()
+    except (OSError, ReplayMiss, ValueError, AttributeError, TypeError, KeyError):
+        return None, True
+    dado = corpo.get("data") if isinstance(corpo, dict) else None
+    if isinstance(dado, str) and _DATA_ISO_RE.fullmatch(dado):
+        try:
+            datetime.strptime(dado, "%Y-%m-%d")  # rejeita 2026-02-30
+            return dado, True
+        except ValueError:
+            pass
+    return None, True
+
+
+def hoje(contexto: str) -> Optional[str]:
+    """Data de referência ("hoje" do texto) como YYYY-MM-DD.
+
+    live → data atual UTC−3. record → cassete válido é reusado; sem cassete válido mede
+    ao vivo e grava chave("GET", "relogio://hoje", contexto) = {"data": ...} (um cassete
+    ruim é refeito: record grava o que falta). replay → lê o cassete; ausente →
+    None + fallback("relogio", "data de referência não gravada"); presente sem data
+    válida (ou com estrutura inválida: JSON quebrado, `null`, `resp` que não é objeto)
+    → None + fallback("relogio", "cassete sem data"). Nunca levanta ReplayMiss
+    (o caso roda, só sem E4) e nunca devolve a string "None".
+    """
+    m = modo_atual()
+    if m == "live":
+        return _hoje_brt_iso()
+    k = chave("GET", RELOGIO_URL, contexto)
+    data, existe = _data_do_cassete(k)
+    if data is not None:
+        return data
+    if m == "replay":
+        telemetria.fallback("relogio", "cassete sem data" if existe else "data de referência não gravada")
+        return None
+    data = _hoje_brt_iso()  # record sem cassete válido: mede e grava
+    resp = Resposta(200, {"content-type": "application/json"},
+                    _json.dumps({"data": data}, ensure_ascii=False).encode("utf-8"),
+                    RELOGIO_URL, cache="live")
+    _gravar(k, "GET", RELOGIO_URL, contexto, resp, 0.0)
+    return data

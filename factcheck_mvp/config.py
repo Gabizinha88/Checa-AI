@@ -28,9 +28,21 @@ def _int(name: str, default: int) -> int:
         return default
 
 
+def _bool(name: str, default: bool = False) -> bool:
+    bruto = os.getenv(name, "").strip().lower()
+    if not bruto:
+        return default
+    return bruto in ("1", "true", "on", "sim", "yes")
+
+
 TELEGRAM_TOKEN = _get("TELEGRAM_TOKEN")
 SERPAPI_KEY = _get("SERPAPI_KEY")
 SERPAPI_TIMEOUT_S = _int("SERPAPI_TIMEOUT_S", 15)  # por tentativa; timeout/conexão ganha 1 nova tentativa
+# Google Fact Check Tools API (ClaimReview de várias agências; base extra, só com INDICE_CHECAGENS=1).
+# Vazio = desligado. Chave do Google Cloud com a "Fact Check Tools API" habilitada.
+FACTCHECK_API_KEY = _get("GOOGLE_FACTCHECK_API_KEY")
+FACTCHECK_MAX_ITENS = _int("FACTCHECK_MAX_ITENS", 5)
+FACTCHECK_TIMEOUT_S = _int("FACTCHECK_TIMEOUT_S", 8)
 OPENROUTER_API_KEY = _get("OPENROUTER_API_KEY")
 OPENROUTER_MODEL = _get("OPENROUTER_MODEL", "deepseek/deepseek-v4-flash")
 OPENROUTER_FALLBACK_MODEL = _get("OPENROUTER_FALLBACK_MODEL", "google/gemma-4-26b-a4b-it:free")
@@ -39,6 +51,8 @@ OPENROUTER_MODEL_JUIZ = _get("OPENROUTER_MODEL_JUIZ")  # vazio = mesmo modelo do
 # Lista separada por vírgula; vazio = roteamento padrão da OpenRouter.
 OPENROUTER_PROVIDER_ORDER = _get("OPENROUTER_PROVIDER_ORDER", "StreamLake")
 OPENROUTER_TIMEOUT_S = _int("OPENROUTER_TIMEOUT_S", 30)
+# Padrões de linguagem via LLM (sinal de estilo, fora do nível). Desligado por padrão desde a auditoria de 13/10.
+PADROES_LLM = os.getenv("PADROES_LLM", "0").strip().lower() in ("1", "true", "on", "sim", "yes")
 OPENROUTER_MAX_TOKENS = _int("OPENROUTER_MAX_TOKENS", 600)
 # TypeSafe Jev (Decisions API): 1 request = 3 noul (~centenas de ms).
 # Uso restrito à classificação de schema (descoberta_site); o julgamento de
@@ -131,6 +145,81 @@ API_RATE_LIMIT_PER_MIN = _int("API_RATE_LIMIT_PER_MIN", 30)
 DISCOVERY_MAX_SITES = _int("DISCOVERY_MAX_SITES", 2)
 DISCOVERY_TIMEOUT_S = _int("DISCOVERY_TIMEOUT_S", 8)
 DISCOVERY_MAX_BYTES = _int("DISCOVERY_MAX_BYTES", 5_000_000)
+# Avisos de configuração inválida (valor ≤ 0 ou não inteiro → default). O pipeline grava cada
+# aviso como fallback("config") no trace da consulta, em vez de falhar o bot por um env ruim.
+AVISOS_CONFIG: list = []
+
+
+def _janela_positiva(name: str, default: int, avisos: list | None = None) -> int:
+    """Inteiro > 0 (dias) lido do ambiente. Vazio → default em silêncio; inválido → default + aviso."""
+    bruto = os.getenv(name, "")
+    if not bruto.strip():
+        return default
+    try:
+        valor = int(bruto)
+    except (TypeError, ValueError):
+        valor = 0
+    if valor <= 0:
+        (AVISOS_CONFIG if avisos is None else avisos).append(
+            f"{name}={bruto!r} inválido (esperado inteiro > 0); usando {default}")
+        return default
+    return valor
+
+
+# E4 relevância temporal: janelas (dias) por marcador; lidas em aplicabilidade.janela_temporal.
+E4_JANELA_HOJE = _janela_positiva("E4_JANELA_HOJE", 2)
+E4_JANELA_ONTEM = _janela_positiva("E4_JANELA_ONTEM", 3)
+E4_JANELA_SEMANA = _janela_positiva("E4_JANELA_SEMANA", 8)
+E4_JANELA_ANTEONTEM = _janela_positiva("E4_JANELA_ANTEONTEM", 4)
+E4_JANELA_SEMANA_PASSADA = _janela_positiva("E4_JANELA_SEMANA_PASSADA", 15)
+E4_JANELA_MES = _janela_positiva("E4_JANELA_MES", 32)
+# Data sem ano ("dia 8", "8 de março") só ancora o evento se a ocorrência mais recente estiver a até
+# este número de dias da referência (aplicabilidade.marco_do_evento). Regra geral: texto de checagem
+# fala de fato recente; data sem ano a mais de ~2 meses para trás tende a ser outra data (aniversário,
+# data histórica) e a inferência do ano erra. 60 dias ≈ o dobro da janela de mês (E4_JANELA_MES = 32).
+E4_MARCO_MAX_DIAS = _janela_positiva("E4_MARCO_MAX_DIAS", 60)
 # Cascata de extração: ReaderLM-v2 como penúltimo nível (desligado por padrão; servidor próprio)
 EXTRACAO_READERLM = _get("EXTRACAO_READERLM", "0")
 READERLM_BASE_URL = _get("READERLM_BASE_URL", "http://127.0.0.1:8889/v1")
+
+# Modo de avaliação (auditoria E, A1): só a API subida para uma simulação liga isto. Habilita os campos
+# `eval_excluir_urls` (fonte deixada de fora) e `eval_repeticao` (juiz sem cache) da EntradaConsulta; sem
+# ele esses campos são ignorados (com `fallback onde=eval`). Nunca ligar em produção.
+EVAL_MODO = _bool("EVAL_MODO", False)
+# Missão F / A4: seleção do trecho do juiz. "novo" (padrão) = título + lide + conclusão/veredito + frases com
+# termos, sem boilerplate (trecho_juiz.py); "antigo" = lide de 2 frases + frases com termos (p/ medir antes/depois).
+JUIZ_TRECHO_MODO = _get("JUIZ_TRECHO_MODO", "novo").strip().lower()
+# Missão F / A2: sintetizador por afirmação (sintetizador.py). Uma chamada LLM por afirmação relê todos os
+# itens julgados e pode REBAIXAR o nível (para media/indeterminada) ou sinalizar "buscar_mais"; nunca sobe
+# o nível nem muda a direção (trava no código). Padrão desligado até a medição provar ganho sem erro grave.
+SINTETIZADOR = _get("SINTETIZADOR", "0").strip().lower() in ("1", "true", "sim", "on")
+SINTETIZADOR_MAX_ITENS = _int("SINTETIZADOR_MAX_ITENS", 12)    # itens julgados enviados por afirmação
+SINTETIZADOR_MAX_TOKENS = _int("SINTETIZADOR_MAX_TOKENS", 1200)
+SINTETIZADOR_TIMEOUT_S = _int("SINTETIZADOR_TIMEOUT_S", 90)    # 1 chamada LLM (por afirmação)
+
+# Missão F / A5: planejador de busca (factcheck_mvp/planejador_busca.py). Padrão desligado: com 0 a busca é a de
+# antes (mesmas consultas, mesmo motor, mesmo número de ondas). Ligado: relaxa consulta vazia, manda `site:` ao
+# Google orgânico, lê mais resultados quando os primeiros são fora do tema e usa o orçamento que sobra.
+BUSCA_PLANEJADOR = _bool("BUSCA_PLANEJADOR", False)
+# Rodadas de relaxamento por onda (cada rodada = 1 busca por consulta vazia, dentro do orçamento do caso).
+BUSCA_RELAXAR_RODADAS = _int("BUSCA_RELAXAR_RODADAS", 2)
+# Teto de resultados lidos por busca ao "ler mais" (a leitura normal é ORGANICOS_POR_BUSCA = 8).
+BUSCA_LER_MAX = _int("BUSCA_LER_MAX", 16)
+# Fração mínima de páginas NAO_TRATA (sem nenhuma postura) para considerar os primeiros resultados fora do tema.
+BUSCA_FORA_TEMA_FRACAO = _float("BUSCA_FORA_TEMA_FRACAO", 0.5)
+# Ondas extras por afirmação com o planejador (o padrão sem ele é AGENTE_MAX_ONDAS_EXTRAS = 1).
+BUSCA_EXTRAS_MAX = _int("BUSCA_EXTRAS_MAX", 3)
+# Missão F / A6: trava de similaridade no atalho do índice (trava_indice.py). Com 1 só cluster decidindo
+# por selo do índice, exige similaridade mínima (Dice, 0..1) entre a alegação checada e o núcleo da
+# afirmação; abaixo do limiar o nível tem teto "media". 0,6 = o `cobertura_min` do próprio índice.
+INDICE_TRAVA_SIMILARIDADE = _get("INDICE_TRAVA_SIMILARIDADE", "0").strip().lower() in ("1", "true", "sim", "on")
+INDICE_TRAVA_SIM_MIN = _float("INDICE_TRAVA_SIM_MIN", 0.6)
+# Missão F / item 7 (Extrator): limpeza determinística pós-LLM do núcleo e da consulta (tira marcadores
+# temporais, moldura de entrega e palavras-ruído que zeram o AND do Google News). Muda consultas: padrão 0.
+EXTRATOR_LIMPEZA = _bool("EXTRATOR_LIMPEZA", False)
+# Missão F / A3 — autoconsistência do juiz: quando UM julgamento SUSTENTA/REFUTA decide o nível (um só
+# cluster com voto), o item é rejulgado K-1 vezes sem cache (temperatura > 0 + seed por repetição) e vale a
+# maioria; se as classes divergirem na direção, o item vira RELATA_SEM_ENDOSSO. Padrão desligado.
+JUIZ_AUTOCONSISTENCIA = _get("JUIZ_AUTOCONSISTENCIA", "0").strip().lower() in ("1", "true", "sim", "on")
+JUIZ_AUTOCONSISTENCIA_K = _int("JUIZ_AUTOCONSISTENCIA_K", 3)  # julgamentos no total (o original + K-1)
+JUIZ_AUTOCONSISTENCIA_TEMP = _float("JUIZ_AUTOCONSISTENCIA_TEMP", 0.5)  # temperatura das repetições

@@ -20,6 +20,8 @@ import unicodedata
 from typing import Any, Dict, Iterable, List, Optional
 from urllib.parse import parse_qsl, urlencode, urlparse
 
+from . import aplicabilidade
+
 # ----------------------------------------------------------------------------- texto
 def _norm(texto: str) -> str:
     texto = unicodedata.normalize("NFKD", texto or "").encode("ascii", "ignore").decode().lower()
@@ -122,30 +124,89 @@ AGENCIAS = {
 _SEMPRE_CREDITO = ("estadao-conteudo", "folhapress")
 
 
+# Crédito de foto/imagem ("Foto: Folhapress", "Imagem: X", "Divulgação") NÃO é
+# assinatura de agência: indica só a origem da imagem, não republicação do texto.
+# Vale p/ todas as agências (regra geral, não só Folhapress).
+_FOTO_MARCA_RE = re.compile(
+    r"\b(fotos?|image(m|ns)|ilustra[çc][ãa]o|cr[ée]ditos?|divulga[çc][ãa]o|reprodu[çc][ãa]o|arquivo)\b", re.I)
+
+
+def _e_credito_foto(t: str, ini: int) -> bool:
+    """True se o match em t[ini:] está num crédito de foto: a linha (ou a anterior,
+    p/ "Foto:" quebrado em duas linhas) traz marca de foto/imagem/crédito antes."""
+    ini_linha = t.rfind("\n", 0, ini) + 1
+    antes = t[ini_linha:ini][-80:]
+    if _FOTO_MARCA_RE.search(antes):
+        return True
+    if len(antes.strip()) < 12 and ini_linha > 0:  # agência logo no início da linha
+        fim_prev = ini_linha - 1
+        ini_prev = t.rfind("\n", 0, fim_prev) + 1
+        if _FOTO_MARCA_RE.search(t[ini_prev:fim_prev][-80:]):
+            return True
+    return False
+
+
 def agencia_assinada(corpo: str) -> Optional[str]:
     t = corpo or ""
     if not t.strip():
         return None
-    janelas = [t[:500], t[-700:]]
+    janelas = [(t[:500], 0), (t[-700:], max(0, len(t) - 700))]
     for chave, rx in AGENCIAS.items():
-        if chave in _SEMPRE_CREDITO and re.search(rx, t, re.I):
-            return chave
+        if chave in _SEMPRE_CREDITO:
+            for m in re.finditer(rx, t, re.I):
+                if not _e_credito_foto(t, m.start()):
+                    return chave
+            continue
         # "Investigado por: Reuters, AFP…" (rodapé do Comprova) NÃO é crédito de republicação:
         # só parênteses, "Fonte:", "Com informações da", "Conteúdo da", linha própria ou "— Agência" no fim.
         credito = (rf"(\(\s*(com\s+)?({rx})[^)]{{0,40}}\)|(fonte|com informa[çc][õo]es d[aeo]s?|"
                    rf"conte[úu]do d[ae]|texto d[ae])\s*:?\s*(a |o )?({rx})|^\s*({rx})\s*$|"
                    rf"[—–-]\s*({rx})\s*$)")
-        for j in janelas:
-            if re.search(credito, j, re.I | re.M):
-                return chave
+        for j, base in janelas:
+            for m in re.finditer(credito, j, re.I | re.M):
+                if not _e_credito_foto(t, base + m.start()):
+                    return chave
     return None
+
+
+# ----------------------------------------------------------------------------- datas
+# Prioridade de uma data de publicação (maior vence; E4 Task 2 + revisão I-3): JSON-LD (dia) 6 >
+# SerpAPI absoluta/ISO (dia) 5 > trafilatura (dia) 4 > SerpAPI relativa ancorada 3 > só ano 2 >
+# ReaderLM 1. `fonte` é a fonte REAL da data; o método que extraiu o texto não entra. Fonte não
+# declarada (None) fica no nível da trafilatura: não sobrepõe a data absoluta da SerpAPI.
+def tier_data(fonte: Optional[str], precisao: Optional[str], relativa: bool = False) -> int:
+    if relativa:
+        return 3
+    if fonte == "readerlm":
+        return 1
+    if precisao == "ano":
+        return 2
+    return {"jsonld": 6, "serpapi": 5, "trafilatura": 4}.get(fonte, 4)
+
+
+# A data da peça viaja inteira (valor, precisão, bruta e tier): nunca um campo de uma data e outro de outra.
+CAMPOS_DATA = ("data_pub", "data_pub_precisao", "data_pub_bruta", "data_pub_tier")
+
+
+def tier_da_peca(p: Dict[str, Any]) -> int:
+    """Tier da data que a peça carrega (-1 = sem data). `data_pub_tier` vale quando foi gravado ao
+    atribuir a data (a página lida, com a fonte real); senão a data veio da SerpAPI/índice e o tier
+    sai dos campos (relativa ancorada, só ano ou absoluta)."""
+    if not p.get("data_pub"):
+        return -1
+    if p.get("data_pub_tier") is not None:
+        return int(p["data_pub_tier"])
+    return tier_data("serpapi", p.get("data_pub_precisao"),
+                     relativa=aplicabilidade.e_relativa(p.get("data_pub_bruta")))
 
 
 # ----------------------------------------------------------------------------- peças
 def fundir_por_url(pecas: Iterable[Dict[str, Any]]) -> tuple:
     """Funde peças com a mesma URL canônica (índice + web, ou duas afirmações).
     Retorna (unicas, fusoes[(url_mantida, url_fundida)]). Campos fundidos: `afs`
-    (união), `origens` (união); veredito/corpo/trecho/data: o primeiro não vazio."""
+    (união), `origens` (união); veredito/corpo/trecho: o primeiro não vazio. A data
+    (`CAMPOS_DATA`) é o conjunto de maior tier entre as peças (I1): a duplicata só troca a
+    data da peça mantida se a dela tem tier maior; empate mantém a da peça mantida."""
     por: Dict[str, Dict[str, Any]] = {}
     ordem: List[str] = []
     fusoes: List[tuple] = []
@@ -164,9 +225,12 @@ def fundir_por_url(pecas: Iterable[Dict[str, Any]]) -> tuple:
         a["afs"] = set(a.get("afs") or set()) | set(p.get("afs") or set())
         a["origens"] = set(a.get("origens") or set()) | set(p.get("origens") or set())
         for campo in ("veredito", "selo_original", "agencia", "afirmacao_checada", "corpo", "trecho",
-                      "data_pub", "snippet", "titulo", "veiculo"):
+                      "snippet", "titulo", "veiculo"):
             if not a.get(campo) and p.get(campo):
                 a[campo] = p[campo]
+        if tier_da_peca(p) > tier_da_peca(a):
+            for campo in CAMPOS_DATA:
+                a[campo] = p.get(campo)
         fusoes.append((a.get("url"), p.get("url")))
     return [por[k] for k in ordem], fusoes
 

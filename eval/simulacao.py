@@ -136,15 +136,28 @@ def buscas_serpapi_do_run(dir_run: Optional[Path]) -> Optional[int]:
     return n
 
 
+def payload_do_caso(frase: Dict[str, Any], excluir_fonte: bool = False, repeticao: int = 0) -> Dict[str, Any]:
+    """Corpo do `POST /checar`. `excluir_fonte`: a `url_checagem` do caso vai em `eval_excluir_urls` (a API só
+    a honra com EVAL_MODO=1); `repeticao` >= 1 isola o cache do juiz (auditoria E, A1)."""
+    p: Dict[str, Any] = {"tipo": "titulo" if len(frase["texto"]) <= 140 else "texto", "conteudo": frase["texto"]}
+    if excluir_fonte and frase.get("url_checagem"):
+        p["eval_excluir_urls"] = [frase["url_checagem"]]
+    if repeticao:
+        p["eval_repeticao"] = int(repeticao)
+    return p
+
+
 def executar_caso(frase: Dict[str, Any], enviar: Callable[[Dict[str, Any]], Dict[str, Any]],
                   dir_runs: Path = RAIZ / "runs",
-                  uso_serpapi: Optional[Callable[[], Optional[int]]] = None) -> Dict[str, Any]:
+                  uso_serpapi: Optional[Callable[[], Optional[int]]] = None,
+                  excluir_fonte: bool = False, repeticao: int = 0) -> Dict[str, Any]:
     """Envia a frase pelo endpoint do usuário e devolve o registro do caso. Nunca levanta."""
-    registro: Dict[str, Any] = {"frase": frase, "erro": None}
+    registro: Dict[str, Any] = {"frase": frase, "erro": None, "repeticao": repeticao,
+                                "fonte_excluida": bool(excluir_fonte and frase.get("url_checagem"))}
     t0, inicio = time.time(), time.time()
     antes = uso_serpapi() if uso_serpapi else None
     try:
-        rel = enviar({"tipo": "titulo" if len(frase["texto"]) <= 140 else "texto", "conteudo": frase["texto"]})
+        rel = enviar(payload_do_caso(frase, excluir_fonte, repeticao))
     except Exception as e:  # registra e segue para a próxima frase
         registro.update(erro=f"{type(e).__name__}: {e}"[:400], tempo_s=round(time.time() - t0, 1))
         return registro
@@ -170,7 +183,9 @@ def extrair(rel: Dict[str, Any]) -> Dict[str, Any]:
               for f in rel.get("fontes", []) or []]
     selos = [{"agencia": f["veiculo"], "selo": f["veredito"]} for f in fontes if f["veredito"]]
     alerta = rel.get("alerta_data", NAO_IMPLEMENTADO) if "alerta_data" in rel else NAO_IMPLEMENTADO
-    if alerta == NAO_IMPLEMENTADO and any("notícia antiga" in (l or "").lower() for l in rel.get("limitacoes", [])):
+    # O aviso do E4 ("verifique se não é notícia antiga recirculando") vai na justificativa e no why, não só nas limitações.
+    textos_aviso = list(rel.get("limitacoes", []) or []) + [rel.get("justificativa", ""), rel.get("why_1linha", "")]
+    if alerta == NAO_IMPLEMENTADO and any("notícia antiga" in (t or "").lower() for t in textos_aviso):
         alerta = True
     return {
         "nivel": rel.get("propensao"), "prob": dec.get("prob"),
@@ -275,7 +290,8 @@ def verificar_regras(regs: List[Dict[str, Any]], urls_base: set) -> List[Dict[st
         if so_titulo:
             titulo.append({"id": cid, "detalhe": f"{len(so_titulo)} fonte(s) só de título votaram: {so_titulo[0]}"})
         base_aplicavel = any(_chave(v.get("url")) in urls_base for v in r.get("vereditos_aplicados", []))
-        if base_aplicavel and (r.get("serpapi") or 0) > 0:
+        # Checagem antiga barrada por data (E4) não é "aplicável": a web roda de propósito (alerta_data).
+        if base_aplicavel and (r.get("serpapi") or 0) > 0 and r.get("alerta_data") is not True:
             web.append({"id": cid, "detalhe": f"selo aplicável da base e mesmo assim {r['serpapi']} busca(s) na web"})
     return [
         {"nome": "Nenhuma conclusão contém \"é falso\" ou \"é verdade\"", "ok": not neutro, "violacoes": neutro,
@@ -283,9 +299,9 @@ def verificar_regras(regs: List[Dict[str, Any]], urls_base: set) -> List[Dict[st
         {"nome": "Selos aparecem sempre atribuídos à agência (\"Selo do Aos Fatos: FALSO\")", "ok": not selo,
          "violacoes": selo, "nota": "Formato exigido pela Fase E (E5); antes dela a justificativa usa \"FALSO (Agência)\"."},
         {"nome": "Nenhuma fonte lida só pelo título influenciou a propensão", "ok": not titulo, "violacoes": titulo,
-         "nota": "Regra da Fase E (E3); hoje fontes só de título votam com peso 0,7."},
+         "nota": "Regra da Fase E (E3): fonte lida só pelo título não vota."},
         {"nome": "A web não foi acionada quando a base tinha checagem aplicável", "ok": not web, "violacoes": web,
-         "nota": "Regra da Fase E (E1); hoje a base e a web rodam sempre."},
+         "nota": "Regra da Fase E (E1). Exceção: checagem antiga barrada por data (E4, `alerta_data`) deixa a web rodar."},
     ]
 
 # --------------------------------------------------------------------------- relatório

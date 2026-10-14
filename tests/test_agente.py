@@ -225,8 +225,11 @@ def test_critico_regras(monkeypatch):
     est = agente.EstadoBusca.novo(teto=9, max_extras=1)
     R = agente.resumir_julgamento
     # veredito de checagem aplicável -> parar
-    d = agente.criticar(est, R(0, _res(itens=[{"classe": "RELATA_SEM_ENDOSSO", "veredito": "FALSO", "cluster": "c1"}])))
+    d = agente.criticar(est, R(0, _res(itens=[{"classe": "REFUTA", "veredito": "FALSO", "cluster": "c1"}])))
     assert d["decisao"] == "parar" and "veredito" in d["motivo"]
+    # P2 (13/10): selo em página que o juiz só marcou RELATA não é veredito aplicável
+    d = agente.criticar(est, R(0, _res(itens=[{"classe": "RELATA_SEM_ENDOSSO", "veredito": "FALSO", "cluster": "c1"}])))
+    assert d["decisao"] == "nova_onda" and not d["contagens"]["veredito_aplicavel"]
     # 2 clusters com postura -> parar
     d = agente.criticar(est, R(0, _res(itens=[{"classe": "REFUTA", "cluster": "c1"},
                                               {"classe": "SUSTENTA", "cluster": "c2"}])))
@@ -242,7 +245,7 @@ def test_critico_regras(monkeypatch):
     assert agente.criticar(est, R(0, []), juiz_disponivel=False)["decisao"] == "parar"
     est.extras[0] = 1
     assert "máximo" in agente.criticar(est, R(0, []))["motivo"]
-    assert [t for t, _ in ev] == ["agente"] * 6
+    assert [t for t, _ in ev] == ["agente"] * 7  # 6 + a chamada RELATA do P2
     assert {"afirmacao", "decisao", "motivo", "contagens"} <= set(ev[0][1])
 
 

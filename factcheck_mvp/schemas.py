@@ -1,10 +1,11 @@
 """Contratos do MVP (Pydantic v2). Valem para Telegram, API e futura web (RNF05)."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import re
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 TipoEntrada = Literal["texto", "titulo", "link"]
 Propensao = Literal["baixa", "media", "alta", "indeterminada"]
@@ -12,6 +13,14 @@ StatusEtapa = Literal["ok", "parcial", "falha", "pulada"]
 Polaridade = Literal["afirma", "nega"]
 # Postura de uma fonte frente ao NÚCLEO da afirmação (juiz_llm)
 Postura = Literal["SUSTENTA", "REFUTA", "RELATA_SEM_ENDOSSO", "NAO_TRATA"]
+
+
+# M5: data de referência = YYYY-MM-DD, ou ISO com hora. Fração só com 3 ou 6 dígitos e fuso só como Z
+# ou ±HH:MM (formas que `datetime.fromisoformat` aceita em todas as versões suportadas).
+_DATA_REFERENCIA_RE = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}"
+    r"(?:T[0-9]{2}:[0-9]{2}(?::[0-9]{2}(?:\.(?:[0-9]{3}|[0-9]{6}))?)?(?:Z|[+-][0-9]{2}:[0-9]{2})?)?")
+_BRT = timezone(timedelta(hours=-3))  # o "hoje" do E4 é o dia em UTC−3
 
 
 def agora_iso() -> str:
@@ -24,6 +33,35 @@ class EntradaConsulta(BaseModel):
     tipo: TipoEntrada
     conteudo: str = Field(..., min_length=3, max_length=20000)
     idioma: str = "pt-BR"
+    # E4: "hoje" do texto (YYYY-MM-DD); None = desconhecida (relógio via replay.*).
+    data_referencia: Optional[str] = None
+    # E4 (A5): entrada por link cuja página não tem data: E4 desligado de forma explícita,
+    # sem cair no relógio de hoje. Exclusivo com `data_referencia`.
+    sem_referencia_temporal: bool = False
+    # Só para avaliação (auditoria E, A1); ignorados fora de `config.EVAL_MODO`. `eval_excluir_urls`: URLs que o
+    # pipeline deve tratar como inexistentes (a checagem de onde o caso saiu); `eval_repeticao`: nº da repetição
+    # (>= 1 isola o cache do juiz; 0 = comportamento normal).
+    eval_excluir_urls: List[str] = Field(default_factory=list, max_length=20)
+    eval_repeticao: int = Field(default=0, ge=0, le=50)
+
+    @field_validator("data_referencia")
+    @classmethod
+    def _validar_data_referencia(cls, v: Optional[str]) -> Optional[str]:
+        """YYYY-MM-DD, ou ISO com hora (M5): a referência é a DATA, em UTC−3 quando há fuso."""
+        if v is None:
+            return None
+        if not _DATA_REFERENCIA_RE.fullmatch(v):
+            raise ValueError("data_referencia deve ser YYYY-MM-DD ou ISO com hora (ex.: 2026-10-09T10:00:00)")
+        dt = datetime.fromisoformat(v[:-1] + "+00:00" if v.endswith("Z") else v)  # ValueError: data/hora inexistente
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(_BRT)
+        return dt.date().isoformat()
+
+    @model_validator(mode="after")
+    def _referencia_unica(self) -> "EntradaConsulta":
+        if self.sem_referencia_temporal and self.data_referencia is not None:
+            raise ValueError("sem_referencia_temporal e data_referencia são excludentes")
+        return self
 
 
 class Afirmacao(BaseModel):
@@ -36,9 +74,17 @@ class Afirmacao(BaseModel):
     nucleo: str = ""
     polaridade: Polaridade = "afirma"
     consulta: str = ""  # 5-8 palavras-chave (PT) para a busca
+    # Missão F / item 7: marcadores relativos de tempo ("hoje", "acabou de sair") tirados do núcleo e da
+    # consulta; a regra de data E4 continua lendo-os (ver `texto_temporal`).
+    marcadores_tempo: List[str] = []
 
     def alvo(self) -> str:
         return (self.nucleo or self.texto).strip()
+
+    def texto_temporal(self) -> str:
+        """Texto que a regra de data E4 lê: a afirmação + os marcadores de tempo extraídos dela (o
+        núcleo e a consulta não os carregam mais). Sem marcadores extras, é o próprio `texto`."""
+        return " ".join([self.texto, *self.marcadores_tempo]).strip()
 
 
 class FonteEvidencia(BaseModel):
@@ -60,7 +106,10 @@ class FonteEvidencia(BaseModel):
     trecho_corpo: Optional[str] = None
     corpo_lido: bool = False
     # Clareza lado-a-lado (check #1): data + quote + tipo p/ tabela
-    data_pub: Optional[str] = None
+    data_pub: Optional[str] = None  # normalizada (UTC−3): a mesma que a decisão usou
+    data_pub_bruta: Optional[str] = None  # como veio da fonte (auditoria; não é exibida)
+    data_pub_precisao: Optional[str] = None  # dia | ano (aplicabilidade.normalizar_data)
+    relevancia_temporal: Optional[float] = None
     quote: Optional[str] = None
     tipo_conteudo: Optional[str] = None  # noticia|checagem|opiniao|satira
     # LLM-juiz: resumo da peça frente à afirmação + termômetro (-100..+100)
@@ -80,6 +129,8 @@ class FonteEvidencia(BaseModel):
     # Confiabilidade (confiabilidade.py): curada | institucional | alto_trafego | plataforma | baixo_trafego
     confiabilidade: Optional[str] = None
     afirmacao: Optional[str] = None  # afirmação (texto do usuário) a que a fonte foi julgada
+    # B1a: porquê da classe dado pelo avaliador (direção). Limite ~240 chars só no prompt; sem corte.
+    raciocinio: Optional[str] = None
 
 
 class SinalAnalise(BaseModel):
@@ -114,6 +165,8 @@ class RelatorioChecagem(BaseModel):
     consulta: EntradaConsulta
     gerado_em: str = Field(default_factory=agora_iso)
     versao: str = "mvp-0.2.0"
+    # E2: onde o veredito foi encontrado (base de checagens vs outras fontes).
+    onde_encontrado: Literal["base", "web"] = "web"
     # Clareza em segundos (check #1): header + why sempre preenchidos pelo pipeline
     header: str = ""
     why_1linha: str = ""

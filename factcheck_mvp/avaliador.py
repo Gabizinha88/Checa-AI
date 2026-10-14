@@ -28,13 +28,25 @@ def _corpo(peca: Dict[str, Any]) -> str:
     return ""
 
 
+def trecho_da_peca(afirmacao_nucleo: str, peca: Dict[str, Any]) -> str:
+    """Trecho EXATO que o juiz recebe para esta peça (`""` se não há julgamento: sem título ou sem corpo
+    lido). Fonte única: `avaliar` o envia ao prompt e a telemetria `n_chars_trecho` (pipeline) mede o
+    mesmo texto (Missão F / A4; antes a telemetria montava o trecho de outro campo e divergia)."""
+    peca = peca or {}
+    titulo = (peca.get("titulo") or "").strip()
+    corpo = _corpo(peca)
+    if not titulo or not (bool(peca.get("corpo_lido")) and len(corpo.strip()) >= MIN_CHARS):
+        return ""
+    return juiz_llm.montar_trecho(titulo, corpo, (afirmacao_nucleo or "").strip())
+
+
 def avaliar(afirmacao_nucleo: str, peca: Dict[str, Any]) -> Dict[str, Any]:
     """Avalia 1 peça frente ao núcleo da afirmação.
 
     Entrada `peca`: `{url, titulo, corpo|texto_completo|trecho_juiz, snippet,
     veiculo, dominio, data_pub, veredito_pagina, corpo_lido}`.
     Saída: `{posicao, citacao, citacao_score, citacao_verificada, pagina_diz,
-    motor, erro, corpo_lido}`. Nunca levanta.
+    raciocinio, motor, erro, corpo_lido}`. Nunca levanta.
     """
     peca = peca or {}
     titulo = (peca.get("titulo") or "").strip()
@@ -44,6 +56,7 @@ def avaliar(afirmacao_nucleo: str, peca: Dict[str, Any]) -> Dict[str, Any]:
         telemetria.fallback("avaliador", ERRO_SEM_CORPO)
         return {"posicao": None, "citacao": "", "citacao_score": None,
                 "citacao_verificada": None, "pagina_diz": "",
+                "raciocinio": "",
                 "motor": MOTOR_SEM_CORPO, "erro": ERRO_SEM_CORPO,
                 "corpo_lido": False}
     nucleo = (afirmacao_nucleo or "").strip()
@@ -53,7 +66,7 @@ def avaliar(afirmacao_nucleo: str, peca: Dict[str, Any]) -> Dict[str, Any]:
         "tipo_fonte": peca.get("tipo_fonte") or "",
         "data": peca.get("data_pub") or peca.get("data") or "",
         "titulo": titulo,
-        "trecho": juiz_llm.montar_trecho(titulo, corpo, nucleo),
+        "trecho": trecho_da_peca(nucleo, peca),
     }
     if peca.get("veredito_pagina"):
         item["veredito_pagina"] = peca["veredito_pagina"]
@@ -64,8 +77,10 @@ def avaliar(afirmacao_nucleo: str, peca: Dict[str, Any]) -> Dict[str, Any]:
         }
     r = juiz_llm.julgar_lote(nucleo, [item])[0]
     return {"posicao": r.get("classe"), "citacao": r.get("citacao") or "",
+            "n_chars_trecho": len(item["trecho"]),
             "citacao_score": r.get("citacao_score"),
             "citacao_verificada": r.get("citacao_verificada"),
             "pagina_diz": r.get("pagina_diz") or "",
+            "raciocinio": r.get("raciocinio") or "",
             "motor": r.get("motor") or "", "erro": r.get("erro"),
             "corpo_lido": True}

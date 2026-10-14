@@ -67,6 +67,21 @@ def test_verificacoes_de_regras():
     assert not web["ok"]                                         # web com selo aplicável da base
 
 
+def test_web_com_checagem_antiga_barrada_por_data_nao_viola_o_e1():
+    """antigas_como_atuais: a base tem a checagem, mas o E4 a barra por data e a web roda de propósito."""
+    r = _reg("enganoso", "indeterminada", 0.5, cat="antigas_como_atuais", header="h", why="w", serpapi=2,
+             justificativa="Verifique se não é notícia antiga recirculando.",
+             vereditos_aplicados=[{"url": "https://lupa.test/1"}], alerta_data=True)
+    web = sim.verificar_regras([r], {"lupa.test/1"})[3]
+    assert web["ok"]
+
+
+def test_alerta_de_data_derivado_do_texto_da_justificativa():
+    rel = {"propensao": "indeterminada", "justificativa": "As fontes são anteriores. Verifique se não é notícia antiga recirculando.",
+           "decisao": {}, "fontes": []}
+    assert sim.extrair(rel)["alerta_data"] is True
+
+
 def test_neutralidade_reprova_e_falso_na_conclusao():
     r = _reg("falso", "alta", 0.9, header="h", why="", justificativa="Isso é falso, segundo nós.", serpapi=0,
              vereditos_aplicados=[])
@@ -123,3 +138,14 @@ def test_moldura_determinista_sem_palavras_de_tempo():
         assert not any(p in m.lower() for p in ("hoje", "agora", "ontem"))
     msg, i = g.emoldurar("É verdade que o Pix vai ser taxado?", "k2")
     assert i in g.MOLDURAS_PERGUNTA and msg.count("?") == 1  # pergunta não ganha pergunta extra
+
+
+def test_payload_do_caso_leva_os_campos_de_avaliacao():
+    f = {"id": "x:1", "texto": "Café cura câncer", "url_checagem": "https://lupa.uol.com.br/a"}
+    assert sim.payload_do_caso(f) == {"tipo": "titulo", "conteudo": "Café cura câncer"}
+    p = sim.payload_do_caso(f, excluir_fonte=True, repeticao=2)
+    assert p["eval_excluir_urls"] == ["https://lupa.uol.com.br/a"] and p["eval_repeticao"] == 2
+    assert "eval_excluir_urls" not in sim.payload_do_caso({**f, "url_checagem": None}, excluir_fonte=True)
+    reg = sim.executar_caso(f, lambda payload: (_ for _ in ()).throw(RuntimeError("sem rede")),
+                            excluir_fonte=True, repeticao=1)
+    assert reg["repeticao"] == 1 and reg["fonte_excluida"] and reg["erro"]

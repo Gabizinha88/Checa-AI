@@ -150,4 +150,5 @@ def test_fallback_regex_nao_poe_moldura_no_nucleo():
 
 
 def test_prompt_mantem_autor_de_fala_atribuida():
-    assert "mantenha o autor" in _af._INSTRUCAO and "Sérgio Sacani disse" in _af._INSTRUCAO
+    # merge #19+#20: sem nome de caso de teste no prompt (higiene do PR19); exemplo do PR19 vale.
+    assert "mantenha o autor" in _af._INSTRUCAO and "Fulano disse" in _af._INSTRUCAO

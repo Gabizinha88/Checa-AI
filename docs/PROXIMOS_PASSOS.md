@@ -2,7 +2,11 @@
 
 > Leia este arquivo inteiro antes de agir. Depois leia `CLAUDE.md` (regras do projeto, valem sempre),
 > `docs/review/REVIEW_2.md` (diagnóstico de 30/09) e `eval/ITERACOES.md` (histórico medido).
-> Atualizado em 2026-10-07 (a versão de 30/09 cobria o PR #4 e o Review 2; a Fase A foi feita desde então).
+> Atualizado em 2026-10-10. A Fase E (E1–E5) e os itens B1/B2 estão feitos na branch `feat/fase-eb-followup`
+> (ainda não mergeada em `main`); o histórico medido está em `eval/ITERACOES.md`. O que ficou sem validar: record da
+> subamostra e holdout (custo + cassetes). Ambiente: use `.venv/Scripts/python.exe` (com `PYTHONUTF8=1`); o `python3` do
+> sistema não tem as dependências. Última medição (HEAD, nível 0): 894 testes · acerto 14,5% · acerto+parcial 33,3% ·
+> erro grave 0 · indeterminada 65,2%.
 
 ## 1. Onde estamos
 
@@ -64,30 +68,28 @@ consulte quando o usuário pedir. Nunca rode eval `record/live` sem dizer o cust
 A1 métricas que batem o trivial · A2 `_descoberta_status` · A3 evento `evidencias` + `eval.decisao` + snapshot ·
 A4 replay determinístico + `nao_reproduzido` · A5 cota SerpAPI interrompe o eval · Iteração 2 re-medida.
 
-### Fase E — processo de checagem definido pela equipe (PRIORIDADE; plano aprovado em parte)
+### Fase E — processo de checagem definido pela equipe ✅ concluída (E1–E5 implementados; falta só medir o E4 em record)
 
 Especificação recebida em 07/10 ("assistente de checagem de fatos"). Respostas da usuária: seguir a
 especificação; classificação = **opção (b)**: mostrar o selo **atribuído à agência** ("Selo do Aos Fatos:
 FALSO") e manter a NOSSA conclusão como propensão em escala. Os testes de neutralidade ficam; só passam a
 aceitar o selo quando vier no formato atribuído. Branch nova a partir da `main`.
 
-- [ ] **E1. Base primeiro, web só se não houver checagem aplicável** (`pipeline.py`, novo `aplicabilidade.py`):
+- [x] **E1. Base primeiro, web só se não houver checagem aplicável** (`pipeline.py`, novo `aplicabilidade.py`):
   base → leitura → juiz → aplicabilidade; só sem checagem aplicável: agente/SerpAPI → leitura → juiz.
   "Aplicável" = página lida por completo + juiz diz que trata do mesmo fato (SUSTENTA/REFUTA/RELATA com
   citação verificada) + selo com direção + data compatível (E4). Etapa no recibo "web pulada: checagem
   aplicável na base". Base = Lupa, Boatos.org, Fato ou Fake, E-Farsas, Comprova, Aos Fatos, Estadão Verifica.
-- [ ] **E2. "Onde foi encontrado"** (`schemas.py` `RelatorioChecagem.onde_encontrado`, bot, web): "Base de
+- [x] **E2. "Onde foi encontrado"** (`schemas.py` `RelatorioChecagem.onde_encontrado`, bot, web): "Base de
   checagem" | "Outras fontes (não encontrado na base)", com aviso explícito quando vier da web.
-- [ ] **E3. Fonte lida só pelo título não vota** (`decisao.py`: hoje `F_SO_TITULO = 0.7`): nem postura nem selo;
+- [x] **E3. Fonte lida só pelo título não vota** ✅ (decidido: título não vota; indeterminada 65% aceita) (`decisao.py`: hoje `F_SO_TITULO = 0.7`): nem postura nem selo;
   aparece na lista como "não analisada integralmente"; se nenhuma fonte lida tiver postura → "evidência
   insuficiente". ⚠️ **Impacto medido (nível 0)**: 91 de 153 posturas do snapshot vêm só de título;
   indeterminada 39% → 65%, acerto+parcial 56,5% → 30,4%, graves 1 → 2. **Aguarda decisão da usuária** (§5.1).
-- [ ] **E4. Regra de data** (`aplicabilidade.py`, `config.py`): marcas "hoje/agora/ontem/nesta semana/acaba de"
-  × data de publicação (janelas 2/3/8 dias, configuráveis). Fonte com data incompatível não vota nem torna a
-  checagem aplicável; se ela CONFIRMA o mesmo fato antigo → sinal "possível notícia antiga fora de contexto"
-  que eleva a propensão. **A parte "eleva a propensão" aguarda decisão** (§5.2). Regressão obrigatória:
-  "Bolsonaro recebeu alta do hospital hoje" (o índice devolve uma checagem antiga do Boatos.org).
-- [ ] **E5. Selo atribuído** (`agregador.py`, bot, web): sempre "Selo d{o,a} <agência>: <SELO>";
+- [x] **E4. Regra de data** (`aplicabilidade.py`, `config.py`) ✅ implementado (09/10, branch `feat/fase-eb-followup`): marcas "hoje/agora/ontem/nesta semana/acaba de"
+  × data de publicação (janelas 2/3/8 dias, configuráveis). Fonte com data incompatível perde peso (desconto em bits, sem zerar) e não torna a checagem aplicável no gate E1. **Não eleva a propensão** (decidido em 09/10, §5.2). Regressão obrigatória:
+  "Bolsonaro recebeu alta do hospital hoje" (o índice devolve uma checagem antiga do Boatos.org), coberta offline em `0ebcd57`. **Pendente:** medição em record (Task 8 Steps 3–7 do plano; aprovação e cassetes).
+- [x] **E5. Selo atribuído** (`agregador.py`, bot, web): sempre "Selo d{o,a} <agência>: <SELO>";
   `verificar_neutralidade` ignora só esse formato, com agência cadastrada.
 - [ ] **Testes**: web pulada com checagem aplicável e chamada sem; aviso "não encontrado na base"; título que não
   vota; selo atribuído aceito e "é falso" na nossa conclusão reprovado; regra de data (caso Bolsonaro).
@@ -99,21 +101,21 @@ aceitar o selo quando vier no formato atribuído. Branch nova a partir da `main`
 Cada item: teste de comportamento que falha antes e passa depois; rodar o eval de decisão; registrar delta.
 Números de referência já simulados estão em `REVIEW_2.md §3`.
 
-- [ ] **B1. Selo só vale com postura e de checador** (`decisao.py` `CLASSES_TRATA`): selo de página que o juiz
+- [x] **B1. Selo só vale com postura e de checador** (`decisao.py` `CLASSES_TRATA`): selo de página que o juiz
   marcou `RELATA_SEM_ENDOSSO` não vota; selo só de publisher checador curado (ClaimReview de **template** do SBT
   News causou o erro grave `cr_jn_soltura_vorcaro`). Reescrever `test_selo_verdadeiro_do_fato_ou_fake_baixa`.
   Conversa com E1 ("aplicável") e E5.
-- [ ] **B2. Regra de combinação entre afirmações** (`decisao.py`, combinação de `por_af`) — erra nas DUAS direções:
+- [x] **B2. Regra de combinação entre afirmações** (`decisao.py`, combinação de `por_af`) — erra nas DUAS direções:
   (a) A com L=+2 e B com L=−5 → `alta`; (b) parte falsa abaixo de τ deixa a parte verdadeira decidir → `baixa`
   (caso `cr_lula_acabar_bets_que_criou`, hoje o único erro grave restante). Projete a regra, escreva os dois
   testes, só então implemente.
 - [x] ~~**B3. Rede social julgada só pelo título**~~ — coberto em parte pelo PR #11 (plataforma pesa 0,45 e não
   crava nível sozinha; o grave `cr_chico_cesar_proibiu_direita` sumiu). Se E3 for aprovada, título nem vota.
-- [ ] **B4. Agência sozinha nunca chega a alta** (R1+R11): REFUTA de agência curada vale como selo; com agência
+- [x] **B4. Agência curada é confiável por natureza** ✅ (13/10, decisão da usuária: REFUTA de agência curada pesa 1,5; R11 anula SUSTENTA de não-agência). Descrição original: **Agência sozinha nunca chega a alta** (R1+R11): REFUTA de agência curada vale como selo; com agência
   refutando, SUSTENTA de não-agência não vota.
-- [ ] **B5. Trava VAGO** só para sujeito genérico (economia, país, governo); hoje dispara em
+- [x] **B5. Trava VAGO** só para sujeito genérico (economia, país, governo); hoje dispara em
   "Ibuprofeno piora o quadro de dengue".
-- [ ] **B6. Independência** (`corroboracao.py`, `catalogo.py`): assinatura de agência não pode casar crédito de
+- [x] **B6. Independência** (`corroboracao.py`, `catalogo.py`): assinatura de agência não pode casar crédito de
   foto ("Folhapress"); aliases do mesmo portal = mesmo cluster; "curada" por host exato ou prefixo declarado
   (hoje `comentarios1.folha.uol.com.br` vale como Folha — visto de novo no eval de 05/10).
 - [ ] **Anti-overfitting**: os pesos do PR #11 (0,45/0,3) e as regras B3/B4 foram escolhidos olhando o dev.
@@ -173,12 +175,39 @@ Números de referência já simulados estão em `REVIEW_2.md §3`.
   quando a chave é recusada.
 - [x] **F6.** `.env.mvp.example` com todas as variáveis lidas pelo código (teste garante).
 
+### Fase G — da auditoria de 13/10 (`eval/ITERACOES.md`, entrada "Auditoria de agentes e prompts")
+
+Feitos nessa rodada: `TELEMETRIA_PROMPTS`, `eval.auditoria`, B4, P2 (selo só com SUSTENTA/REFUTA), índice pela 1ª frase do trecho
+e anos fora dos números (P1/P4/P6), prompts de afirmações e do juiz, `PADROES_LLM` off, DNS/retry (P3 a, b). Itens abertos:
+
+- [ ] **G1. Primas temáticas com B4** (maior risco de erro grave verdadeiro → alta): escrever variantes verdadeiras ou de alegação
+  diferente do mesmo tema (sem usar o texto do alvo) e rodar índice+juiz; meta: 0 alta em verdadeiras.
+- [ ] **G2. Polaridade e divisão de frase por LLM**: 100 frases com "não" interno e "É falso que" em moldura/aspas, 3 repetições;
+  a regra 2 ainda manda inverter "X não faz Y" e `_moldura_negacao` só casa no início do texto.
+- [ ] **G3. Paráfrase e holdout do índice**: recall@5 e FP com paráfrases humanas das checagens (e `checagens_holdout_excluidas.json`);
+  hoje só se mede o caso verbatim. A cobertura de 0,8 mede a consulta, não o registro; "não" é stopword; `score_rel` não é usado.
+- [ ] **G4. Datas sem marcador e ano ignorado**: pares com ano trocado, hoax de morte reciclado; E4 só desconta com "hoje/ontem/agora".
+- [ ] **G5. B4/R11 e o gate `pulou_web` com a web ligada** (precisa de SerpAPI): comparar B4 ligado/desligado, contar
+  `posturas_suprimidas`, conferir à mão se a REFUTA de agência é da mesma alegação.
+- [ ] **G6. Renovar a SerpAPI** (cota 250/250 no mês; erro de cota → parar e avisar) e a chave do OpenRouter (expira em 22/10/2026).
+- [ ] **G7. Ingestor**: `afirmacao_checada = "#CaiuNaRede"` em 39 registros da Lupa (usar o título sem hashtag); 3.094 do Boatos e
+  8.277 da Lupa têm só título/resumo (`origem=rss-titulo`).
+- [ ] **G9. Motor de busca** (auditor D, rodada com Google News): o News não indexa o boatos.org e o `site:… OR …` devolve só 4 dos
+  12 hosts. Medir recall@8 por motor e por agência nas ~100 checagens `fora_da_base` de 2026; testar o híbrido (News para a consulta
+  pura + orgânico para o `site:`); ler mais de 8 dos até 100 resultados; não congelar em cassete consulta vazia do News.
+- [ ] **G10. Juiz e decisão na web**: REFUTA por ausência/inferência (regra 3b adicionada, falta medir com 40 pares); citação só prova
+  existência, não suporte; R11 nunca disparou; trava determinística `afirma ⇒ núcleo ≈ afirmação` (inclusive "X não faz Y" sem atribuição).
+- [ ] **G11. Operação**: LLM cai (504/429 do provedor) em ~8% dos casos e muda o desfecho do gate e do aviso de data; lock entre
+  processos não funciona no Windows (`fcntl`); repetir cada caso ≥ 3× para separar variância de LLM de efeito de mudança.
+- [ ] **G8. Decisões**: P3(c) (trecho do índice como corpo quando a página não carrega), P7 (métrica das `antigas_como_atuais` e
+  controles sem origem) e a política de `sem_evidencia` (§5.3).
+
 ## 5. Decisões que são do usuário (pergunte; não decida sozinho)
 
 1. **E3**: seguir à risca "título nunca vota", mesmo com indeterminada ~65% no snapshot, ou antes ampliar a
    leitura (ex.: `crawl4ai` para páginas que exigem JavaScript)?
-2. **E4**: fonte antiga que CONFIRMA o fato apresentado como atual eleva a propensão ("possível notícia antiga
-   fora de contexto"), e a que REFUTA um episódio antigo só não vota — de acordo?
+2. ~~**E4**: fonte antiga que CONFIRMA o fato apresentado como atual eleva a propensão ("possível notícia antiga
+   fora de contexto"), e a que REFUTA um episódio antigo só não vota — de acordo?~~ **Resolvida em 09/10 pela usuária:** não há sinal que eleve a propensão por notícia antiga. Fonte de outro período perde peso nos dois sentidos (desconto simétrico); o nível só pode ficar mais extremo quando a fonte antiga de sinal oposto perde peso, desde que a direção venha de fontes dentro do período. Extremo sustentado só por fonte descontada fica vetado (trava `so_fontes_de_outro_periodo`).
 3. Política de `sem_evidencia`: `alta` para "boato sem prova" é erro ou acerto?
 4. Corrigir os rótulos de `cr_ibge_trafico_no_pib` e `cr_jn_soltura_vorcaro` (evidência em `review2/r_eval.md`)
    — com justificativa na `nota`, nunca em silêncio.
