@@ -204,3 +204,6 @@ BUSCA_EXTRAS_MAX = _int("BUSCA_EXTRAS_MAX", 3)
 # afirmação; abaixo do limiar o nível tem teto "media". 0,6 = o `cobertura_min` do próprio índice.
 INDICE_TRAVA_SIMILARIDADE = _get("INDICE_TRAVA_SIMILARIDADE", "0").strip().lower() in ("1", "true", "sim", "on")
 INDICE_TRAVA_SIM_MIN = _float("INDICE_TRAVA_SIM_MIN", 0.6)
+# Missão F / item 7 (Extrator): limpeza determinística pós-LLM do núcleo e da consulta (tira marcadores
+# temporais, moldura de entrega e palavras-ruído que zeram o AND do Google News). Muda consultas: padrão 0.
+EXTRATOR_LIMPEZA = _bool("EXTRATOR_LIMPEZA", False)
