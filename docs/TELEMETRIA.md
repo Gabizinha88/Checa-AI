@@ -148,6 +148,22 @@ Não são marcador: "hoje em dia", "até agora", "nos dias de hoje" e "há pouco
 - Desconto temporal (E4): `cli trace <id>` mostra `L_sem_desconto`/`nivel_sem_desconto`/`descontos`
   no bloco DECISAO (via `travas`); `cli trace <id> --eventos fonte` lista os `estagio=data`.
 
+### 1.x Langfuse (espelho externo)
+
+O trace local é a fonte de verdade; `factcheck_mvp/langfuse_export.py` o espelha no Langfuse
+(run → trace, etapa → span, llm → generation com prompt/saída, fonte/fallback/decisão → event).
+IDs determinísticos: reexportar o mesmo run sobrescreve. Não passa por `replay.*` (nunca vai a cassete).
+Credenciais no `.env`: `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_BASE_URL`.
+
+```bash
+python3 -m factcheck_mvp.langfuse_export enviar --simulacao reports/<pasta>/dados.json --tag x
+python3 -m factcheck_mvp.langfuse_export enviar <run_id…> --tag x
+python3 -m factcheck_mvp.langfuse_export puxar --tag x --saida lf.json   # traces + observações
+```
+
+`LANGFUSE_AUTO=1` exporta cada run ao terminar (falha só avisa no stderr). Para ver prompts completos,
+rode com `TELEMETRIA_PROMPTS=1`. O trace não guarda tokens, então o Langfuse não calcula custo.
+
 ## 2. Replay (I/O determinístico)
 
 Modo: env `IO_MODO=live|record|replay` (padrão `live`), `replay.definir_modo(m)` (processo) ou

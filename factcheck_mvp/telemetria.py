@@ -99,7 +99,7 @@ _RX_REDACAO = [
     # chaves no formato sk-... (OpenRouter/OpenAI)
     (re.compile(r"\bsk-(?:or-v1-)?[A-Za-z0-9_-]{16,}"), "sk-REDACTED"),
 ]
-_ENV_SEGREDOS = ("SERPAPI_KEY", "OPENROUTER_API_KEY", "TELEGRAM_TOKEN", "UNSLOTH_API_KEY")
+_ENV_SEGREDOS = ("SERPAPI_KEY", "OPENROUTER_API_KEY", "TELEGRAM_TOKEN", "UNSLOTH_API_KEY", "LANGFUSE_SECRET_KEY")
 
 
 def redigir(texto: str) -> str:
@@ -245,6 +245,10 @@ def finalizar_run(resultado: Optional[Dict[str, Any]] = None, erro: Optional[str
     except (ValueError, RuntimeError):
         _run_ctx.set(None)  # finalizado em outro contexto: só desliga
     _ultimo_run_id = r.id
+    if os.environ.get("LANGFUSE_AUTO", "0") == "1":  # espelha o run no Langfuse (opcional, nunca falha o run)
+        from . import langfuse_export
+        if langfuse_export.configurado():
+            langfuse_export.exportar_run_atual(r.id)
     return r.id
 
 
