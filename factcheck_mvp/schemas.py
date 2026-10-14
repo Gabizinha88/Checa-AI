@@ -74,9 +74,17 @@ class Afirmacao(BaseModel):
     nucleo: str = ""
     polaridade: Polaridade = "afirma"
     consulta: str = ""  # 5-8 palavras-chave (PT) para a busca
+    # Missão F / item 7: marcadores relativos de tempo ("hoje", "acabou de sair") tirados do núcleo e da
+    # consulta; a regra de data E4 continua lendo-os (ver `texto_temporal`).
+    marcadores_tempo: List[str] = []
 
     def alvo(self) -> str:
         return (self.nucleo or self.texto).strip()
+
+    def texto_temporal(self) -> str:
+        """Texto que a regra de data E4 lê: a afirmação + os marcadores de tempo extraídos dela (o
+        núcleo e a consulta não os carregam mais). Sem marcadores extras, é o próprio `texto`."""
+        return " ".join([self.texto, *self.marcadores_tempo]).strip()
 
 
 class FonteEvidencia(BaseModel):

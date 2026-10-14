@@ -176,3 +176,6 @@ READERLM_BASE_URL = _get("READERLM_BASE_URL", "http://127.0.0.1:8889/v1")
 # `eval_excluir_urls` (fonte deixada de fora) e `eval_repeticao` (juiz sem cache) da EntradaConsulta; sem
 # ele esses campos são ignorados (com `fallback onde=eval`). Nunca ligar em produção.
 EVAL_MODO = _bool("EVAL_MODO", False)
+# Missão F / item 7 (Extrator): limpeza determinística pós-LLM do núcleo e da consulta (tira marcadores
+# temporais, moldura de entrega e palavras-ruído que zeram o AND do Google News). Muda consultas: padrão 0.
+EXTRATOR_LIMPEZA = _bool("EXTRATOR_LIMPEZA", False)
