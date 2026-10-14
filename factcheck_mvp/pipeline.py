@@ -27,6 +27,7 @@ from . import (afirmacoes, aplicabilidade, avaliador, confiabilidade, config, co
                juiz_llm, padroes_llm, replay, selos, telemetria)
 from . import agente as _agente
 from . import observabilidade
+from . import sintetizador  # Missão F / A2
 from .agregador import perguntas_guia, texto_de_linha
 from .aprofundar import aprofundar
 from .catalogo import Catalogo
@@ -605,7 +606,11 @@ class Pipeline:
             data_referencia=ref)
         telemetria.evento("evidencias", **asdict(ev))
         dec = decisao.decidir(ev)
-        self._emitir_decisao(dec)
+        nivel_agregador = dec.nivel
+        if config.SINTETIZADOR and usar_llm and juiz_ok:  # Missão F / A2: só pode rebaixar (sintetizador.travar_nivel)
+            await avisar("Comparando as fontes entre si…")
+            await asyncio.to_thread(sintetizador.rodar, dec, afs, pecas, julg, limitacoes)
+        self._emitir_decisao(dec, nivel_agregador)
         etapa("agregacao", "ok", f"propensão {dec.nivel} (L={dec.log_odds:+.2f}, p={dec.prob:.2f}): {dec.motivo}.")
 
         fontes = self._fontes(afs, pecas, julg, dec)
@@ -1097,7 +1102,7 @@ class Pipeline:
 
     # ------------------------------------------------------------------ saída
     @staticmethod
-    def _emitir_decisao(dec: "decisao.Decisao") -> None:
+    def _emitir_decisao(dec: "decisao.Decisao", nivel_agregador: Optional[str] = None) -> None:
         for v in dec.votos:
             telemetria.evento("sinal", motor="veredito-existente" if v.vereditos else "corroboracao",
                               rotulo=f"af{v.afirmacao} cluster {v.cluster}: {', '.join(v.classes + v.vereditos)}",
@@ -1113,7 +1118,7 @@ class Pipeline:
                               afirmacao=d.get("afirmacao"), data_pub=d.get("data_pub"),
                               data_pub_bruta=d.get("data_pub_bruta"), precisao=d.get("data_pub_precisao"),
                               r=d.get("r"), bits=d.get("bits_descartados"))
-        telemetria.evento("decisao", nivel=dec.nivel, nivel_agregador=dec.nivel, score=dec.log_odds,
+        telemetria.evento("decisao", nivel=dec.nivel, nivel_agregador=nivel_agregador or dec.nivel, score=dec.log_odds,
                           sinais=[f"af{v.afirmacao}:{v.cluster}:{v.valor:+.2f}" for v in dec.votos],
                           why=dec.why_1linha(), travas=dec.resumo_trace(), decisao=dec.to_dict())
 

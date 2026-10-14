@@ -179,3 +179,10 @@ EVAL_MODO = _bool("EVAL_MODO", False)
 # Missão F / A4: seleção do trecho do juiz. "novo" (padrão) = título + lide + conclusão/veredito + frases com
 # termos, sem boilerplate (trecho_juiz.py); "antigo" = lide de 2 frases + frases com termos (p/ medir antes/depois).
 JUIZ_TRECHO_MODO = _get("JUIZ_TRECHO_MODO", "novo").strip().lower()
+# Missão F / A2: sintetizador por afirmação (sintetizador.py). Uma chamada LLM por afirmação relê todos os
+# itens julgados e pode REBAIXAR o nível (para media/indeterminada) ou sinalizar "buscar_mais"; nunca sobe
+# o nível nem muda a direção (trava no código). Padrão desligado até a medição provar ganho sem erro grave.
+SINTETIZADOR = _get("SINTETIZADOR", "0").strip().lower() in ("1", "true", "sim", "on")
+SINTETIZADOR_MAX_ITENS = _int("SINTETIZADOR_MAX_ITENS", 12)    # itens julgados enviados por afirmação
+SINTETIZADOR_MAX_TOKENS = _int("SINTETIZADOR_MAX_TOKENS", 1200)
+SINTETIZADOR_TIMEOUT_S = _int("SINTETIZADOR_TIMEOUT_S", 90)    # 1 chamada LLM (por afirmação)

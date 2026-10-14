@@ -77,6 +77,7 @@ n_fallbacks, fallbacks_por_onde, descartes_por_motivo, n_erros, dur_ms, nivel}`.
 | `sinal` | `motor`, `rotulo`, `valor`, `confianca`, `direcao` (via `agregador._direcao`, `None` se não existir), `peso` (`agregador.PESOS`), `evidencias` | pipeline, antes de `agregar` |
 | `decisao` | `nivel` (final), `nivel_agregador`, `score`, `sinais` (lista `motor:rotulo`), `why`, `travas` (ver abaixo), `decisao` (`Decisao.to_dict()`, ver abaixo) | pipeline (fim, e no retorno "sem afirmação") |
 | | `travas` é o `decisao.resumo_trace()`: inclui `L`, `p`, `motivo`, `votos`, `vereditos`, `vereditos_ignorados`, `conflitos`, `contagem`, `L_sem_desconto`, `nivel_sem_desconto` (contrafactual sem desconto temporal, E4) e `descontos` (≤6, `"<url[:60]> +<dias>d r=<r> −<bits>b"`) e `posturas_fracas` (≤6, `"af<i> <classe>@<url[:60]> pf=<prob_fake>"`: postura com fator BERT abaixo de 5% do peso, `FRACAO_MIN_VOTO`; não vota) | |
+| `sintetizador` | (Missão F / A2; só com `SINTETIZADOR=1`, 1 por consulta, antes de `decisao`) `nivel_antes`, `nivel_depois`, `efeito` (`nenhum`\|`rebaixado: X -> Y`\|`buscar_mais sinalizado (nível mantido)`\|`rebaixar pedido, sem efeito (já no piso)`\|`pulado: nível já indeterminado`), `buscar_mais` (índices das afirmações), `afirmacoes[]`: `afirmacao`, `n_itens`, `classes{}`, `agencias`, `acao` (efetiva depois das guardas), `acao_llm`, `consistente`, `conflitos[]`, `motivo`, `erro` (fallback), `modelo`. A chamada LLM tem `finalidade=sintetizador`. O evento `decisao` traz `nivel` final e `nivel_agregador` (antes do sintetizador); `travas.sintetizador_rebaixou` / `travas.sintetizador_buscar_mais` quando agiu | `sintetizador.rodar` |
 | `erro` | `onde`, `erro` | pipeline (exceção), replay (gravar cassete), eval |
 | `span_inicio` / `span_fim` | `nome`, extras; no fim `dur_ms`, `ok`, `erro` | quem usar `span` |
 
@@ -92,6 +93,12 @@ Travas do evento `decisao` (`travas` = `resumo_trace()`, com estas chaves de `De
   período (`fora_da_conjuncao` em `por_afirmacao`) e o nível sairia baixa: o |L| foi cortado para −0,99τ e
   o texto fica em média. A alta pelas partes atuais não é afetada.
 - `data_incompativel`: há fontes com desconto temporal (`descontos_temporais` não vazio).
+- `sintetizador_rebaixou` (Missão F / A2, `SINTETIZADOR=1`): o sintetizador reduziu o nível (alta/baixa -> media ou
+  indeterminada; media -> indeterminada). Nunca sobe nem inverte o lado. `parametros.sintetizador` guarda `nivel_antes`,
+  `conflitos` e a frase mostrada na justificativa; `log_odds`/`prob` continuam os do agregador.
+- `sintetizador_buscar_mais` (Missão F / A2): o sintetizador pediu mais busca. É só um SINAL (limitação + esta trava):
+  a onda extra depois da decisão não foi implementada (exigiria reabrir o laço de `_ondas_extras`, julgar de novo e
+  chamar `decidir` outra vez), então o nível não muda por causa dele.
 
 `finalidade` de LLM: explícita (`llm_post(finalidade=...)` ou `with telemetria.finalidade(...)`) ou
 inferida do chamador: `afirmacoes`, `padroes`, `reformular` (agente: consulta da onda extra), `juiz-resumo` (`juiz_llm.resumir`), `juiz`
@@ -118,6 +125,8 @@ relativa, p.ex. "há 3 dias", e não há data para ancorá-la; na entrada por li
 `dns` (P3: o domínio de uma página a ler não resolveu mesmo após uma nova tentativa; antes isso aparecia como
 "url insegura (SSRF)". `motivo` = `não resolveu o domínio`, com `url`),
 `eval` (`eval_excluir_urls`/`eval_repeticao` recebidos com `EVAL_MODO` desligado: ignorados, nada é escondido do pipeline),
+`sintetizador` (Missão F / A2: LLM indisponível ou JSON inválido após retry, `rebaixar` sem conflito
+declarado, ou falha ao aplicar; em todos o nível do agregador fica e a ação vale `manter`),
 `config` (E4: `E4_*` (janelas e `E4_MARCO_MAX_DIAS`) inválido no ambiente, não inteiro > 0 → usa o
 default; `motivo` = o aviso, p.ex. `E4_JANELA_HOJE='0' inválido (esperado inteiro > 0); usando 2`; emitido no
 início de cada execução).

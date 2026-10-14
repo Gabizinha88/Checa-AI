@@ -330,6 +330,8 @@ class Decisao:
             if self._elegivel() and (self.nivel != self.nivel_sem_desconto
                                      or self.travas.get("so_fontes_de_outro_periodo")):
                 partes.append("Verifique se não é notícia antiga recirculando.")
+        if self.travas.get("sintetizador_rebaixou") and self.nivel != "indeterminada":  # Missão F / A2
+            partes.append(self.parametros.get("sintetizador", {}).get("frase", ""))
         partes.append("Isso não é um veredito: compare as fontes abaixo e tire sua própria conclusão.")
         return " ".join(partes)
 
