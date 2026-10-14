@@ -176,3 +176,10 @@ READERLM_BASE_URL = _get("READERLM_BASE_URL", "http://127.0.0.1:8889/v1")
 # `eval_excluir_urls` (fonte deixada de fora) e `eval_repeticao` (juiz sem cache) da EntradaConsulta; sem
 # ele esses campos são ignorados (com `fallback onde=eval`). Nunca ligar em produção.
 EVAL_MODO = _bool("EVAL_MODO", False)
+# Missão F / A2: sintetizador por afirmação (sintetizador.py). Uma chamada LLM por afirmação relê todos os
+# itens julgados e pode REBAIXAR o nível (para media/indeterminada) ou sinalizar "buscar_mais"; nunca sobe
+# o nível nem muda a direção (trava no código). Padrão desligado até a medição provar ganho sem erro grave.
+SINTETIZADOR = _get("SINTETIZADOR", "0").strip().lower() in ("1", "true", "sim", "on")
+SINTETIZADOR_MAX_ITENS = _int("SINTETIZADOR_MAX_ITENS", 12)    # itens julgados enviados por afirmação
+SINTETIZADOR_MAX_TOKENS = _int("SINTETIZADOR_MAX_TOKENS", 1200)
+SINTETIZADOR_TIMEOUT_S = _int("SINTETIZADOR_TIMEOUT_S", 90)    # 1 chamada LLM (por afirmação)
