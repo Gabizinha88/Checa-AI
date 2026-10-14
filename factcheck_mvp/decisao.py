@@ -94,7 +94,7 @@ import math
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 
-from . import aplicabilidade, confiabilidade, selos
+from . import aplicabilidade, confiabilidade, selos, trava_indice
 
 # ------------------------------------------------------------------ parâmetros (únicos)
 TAU = math.log(3)            # faixa média: |L| < ln 3  <=>  0,25 < p < 0,75
@@ -141,6 +141,9 @@ class ItemEvidencia:
         if not self.curada:
             return False
         return confiabilidade.eh_agencia_checagem(self.url) if self.agencia is None else bool(self.agencia)
+    # Missão F / A6: textos que dizem o que a checagem do índice checou (afirmação checada, título, 1ª frase
+    # do trecho). None = não informado (snapshot antigo / peça que não é do índice): a trava não age.
+    alegacoes_checadas: Optional[List[str]] = None
 
     def nivel_confiabilidade(self) -> str:
         return self.confiabilidade or confiabilidade.classificar(self.url, self.curada)
@@ -202,6 +205,7 @@ class Decisao:
     descontos_temporais: List[Dict[str, Any]] = field(default_factory=list)  # E4: evidência de outro episódio
     posturas_fracas: List[Dict[str, Any]] = field(default_factory=list)      # D-c: postura abaixo de 5% do peso
     posturas_suprimidas: List[Dict[str, Any]] = field(default_factory=list)  # B4/R11: SUSTENTA de não-agência anulada
+    tetos_similaridade: List[Dict[str, Any]] = field(default_factory=list)   # Missão F / A6: selo do índice cortado
     contagem: Dict[str, int] = field(default_factory=dict)
     travas: Dict[str, bool] = field(default_factory=dict)
     parametros: Dict[str, Any] = field(default_factory=dict)
@@ -304,6 +308,9 @@ class Decisao:
                 else:
                     partes.append("As fontes que tomam posição são redes sociais ou sites pouco acessados, "
                                   "então o resultado não passa de propensão média.")
+            if self.nivel == "media" and self.travas.get("indice_similaridade_baixa"):  # Missão F / A6
+                partes.append("A única checagem encontrada trata de uma alegação parecida, mas não igual, "
+                              "à do texto, então o resultado não passa de propensão média.")
             if self.travas.get("parte_sem_checagem_atual"):  # D-b
                 partes += [_frase_sem_fonte_atual(e, i) for i, e in enumerate(self.por_afirmacao)
                            if "fora_da_conjuncao" in e]
@@ -544,7 +551,7 @@ def _contribuicoes(it: ItemEvidencia, s: float, dec: Decisao, agencia_refuta: bo
 
 def _agregar(clusters: Dict[str, List[tuple]], a_idx: int, dec: Decisao, registrar: bool,
              atuais: Optional[Dict[str, List[float]]] = None,
-             descontados: frozenset = frozenset()) -> float:
+             descontados: frozenset = frozenset(), nucleo: str = "") -> float:
     """Agrega os votos de UMA afirmação (um voto por cluster + duas travas: confiabilidade e E4).
 
     Mesma regra para o caminho com desconto e para o contrafactual sem desconto;
@@ -553,6 +560,7 @@ def _agregar(clusters: Dict[str, List[tuple]], a_idx: int, dec: Decisao, registr
     (dentro da janela). Sem ele a trava so_fontes_de_outro_periodo não age (contrafactual).
     `descontados` (ids dos itens descontados por data): só fonte atual conta como confiável para a
     trava sem_fonte_confiavel (I1). Uma curada de outro período, com peso ≈ 0, não a destrava.
+    `nucleo` (Missão F / A6): núcleo da afirmação, para a trava de similaridade do selo do índice.
     Devolve L_a.
     """
     L_a = 0.0
@@ -586,13 +594,18 @@ def _agregar(clusters: Dict[str, List[tuple]], a_idx: int, dec: Decisao, registr
         corta_sem = not any(v.confiavel and v.valor * sinal > 0 for v in novos)
         corta_so = atuais is not None and not any(
             v.valor * sinal > 0 and any(x * sinal > 0 for x in atuais.get(v.cluster, ())) for v in novos)
-    if corta_sem or corta_so:
+    # 3) Missão F / A6: selo do índice de UMA só checagem cuja alegação não é a do texto não crava sozinho.
+    teto_sim = trava_indice.avaliar_teto(clusters, L_a, TAU, nucleo)
+    if corta_sem or corta_so or teto_sim:
         L_a = math.copysign(TAU * 0.99, L_a)
         if registrar:
             if corta_sem:
                 dec.travas["sem_fonte_confiavel"] = True
             if corta_so:
                 dec.travas["so_fontes_de_outro_periodo"] = True
+            if teto_sim:
+                dec.travas["indice_similaridade_baixa"] = True
+                dec.tetos_similaridade.append({**teto_sim, "afirmacao": a_idx})
     if registrar:
         dec.votos.extend(novos)
     return L_a
@@ -674,6 +687,7 @@ def decidir(ev: Evidencias) -> Decisao:
     dec = Decisao(nivel="indeterminada", log_odds=0.0, prob=0.5, motivo="",
                   travas={"vago": ev.vago, "opiniao": ev.opiniao, "rumor": ev.rumor, "sem_fonte_confiavel": False,
                           "so_fontes_de_outro_periodo": False, "parte_sem_checagem_atual": False,
+                          "indice_similaridade_baixa": False,
                           "juiz_disponivel": ev.juiz_disponivel},
                   parametros={"tau": round(TAU, 4), "w_postura": W_POSTURA, "w_veredito": W_VEREDITO,
                               "f_nao_curada": F_NAO_CURADA, "f_veredito_nao_curada": F_VEREDITO_NAO_CURADA,
@@ -749,9 +763,10 @@ def decidir(ev: Evidencias) -> Decisao:
                 clusters.setdefault(it.cluster or it.url, []).append((valor, desc, it))
             for valor, desc in brutos:
                 clusters_brutos.setdefault(it.cluster or it.url, []).append((valor, desc, it))
+        nucleo_a = af.nucleo or af.texto
         L_a = _agregar(clusters, a_idx, dec, registrar=True, atuais=atuais,
-                       descontados=frozenset(ids_descontados))
-        L_a_bruto = _agregar(clusters_brutos, a_idx, dec, registrar=False)
+                       descontados=frozenset(ids_descontados), nucleo=nucleo_a)
+        L_a_bruto = _agregar(clusters_brutos, a_idx, dec, registrar=False, nucleo=nucleo_a)
         por_af[a_idx] = L_a
         por_af_brutos[a_idx] = L_a_bruto
         n_votos[a_idx] = sum(1 for v in dec.votos if v.afirmacao == a_idx)
@@ -831,6 +846,9 @@ def decidir(ev: Evidencias) -> Decisao:
             dec.motivo = ("as fontes com posição são redes sociais ou sites pouco acessados"
                           + (", ou de outro período" if dec._confiavel_de_outro_periodo() else "")
                           + "; falta a confirmação de um veículo, órgão público ou site muito acessado")
+        elif dec.nivel == "media" and dec.travas.get("indice_similaridade_baixa"):
+            dec.motivo = ("a única checagem encontrada trata de uma alegação parecida, mas não igual, "
+                          "à do texto: falta uma segunda fonte independente")
         elif dec.nivel == "media" and (dec.nivel != dec.nivel_sem_desconto
                                        or dec.travas.get("so_fontes_de_outro_periodo")):
             dec.motivo = ("as fontes encontradas são anteriores ao período que o texto descreve "

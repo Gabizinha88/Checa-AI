@@ -176,3 +176,8 @@ READERLM_BASE_URL = _get("READERLM_BASE_URL", "http://127.0.0.1:8889/v1")
 # `eval_excluir_urls` (fonte deixada de fora) e `eval_repeticao` (juiz sem cache) da EntradaConsulta; sem
 # ele esses campos são ignorados (com `fallback onde=eval`). Nunca ligar em produção.
 EVAL_MODO = _bool("EVAL_MODO", False)
+# Missão F / A6: trava de similaridade no atalho do índice (trava_indice.py). Com 1 só cluster decidindo
+# por selo do índice, exige similaridade mínima (Dice, 0..1) entre a alegação checada e o núcleo da
+# afirmação; abaixo do limiar o nível tem teto "media". 0,6 = o `cobertura_min` do próprio índice.
+INDICE_TRAVA_SIMILARIDADE = _get("INDICE_TRAVA_SIMILARIDADE", "0").strip().lower() in ("1", "true", "sim", "on")
+INDICE_TRAVA_SIM_MIN = _float("INDICE_TRAVA_SIM_MIN", 0.6)
