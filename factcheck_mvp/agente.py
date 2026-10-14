@@ -44,7 +44,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from pydantic import BaseModel
 
-from . import config, corroboracao, llm, selos, telemetria
+from . import config, corroboracao, eval_modo, llm, selos, telemetria
 from . import serpapi_layer as camada
 
 log = logging.getLogger("factcheck.agente")
@@ -135,6 +135,7 @@ class EstadoBusca:
     resultados_q: Dict[str, "camada.ResultadoBusca"] = field(default_factory=dict)
     decisoes: List[str] = field(default_factory=list)
     criticas: List[Dict[str, Any]] = field(default_factory=list)
+    excluir: frozenset = frozenset()   # só avaliação (A1): URLs normalizadas que não existem para este caso
 
     @classmethod
     def novo(cls, teto: Optional[int] = None, max_extras: Optional[int] = None,
@@ -176,6 +177,9 @@ class EstadoBusca:
                                          ancora=((payload or {}).get("search_metadata") or {}).get("created_at"))
             canon = corroboracao.url_canonica(d.get("url", "")) if d.get("url") else ""
             if not canon:
+                continue
+            if eval_modo.foi_excluida(d.get("url", ""), self.excluir):  # A1: a fonte do caso fica de fora
+                telemetria.evento("eval_exclusao", url=d.get("url"), onde="web")
                 continue
             n += 1
             atual = self.docs.get(canon)

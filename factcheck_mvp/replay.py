@@ -125,6 +125,36 @@ class modo:
         return False
 
 
+# Sal do cassete do LLM (auditoria E, A1/A3): quando definido, as chamadas de `FINALIDADES_COM_SAL` entram na
+# chave do cassete com o sal, então uma repetição (ou um voto extra da autoconsistência) não reaproveita o
+# julgamento gravado pelas outras: é uma amostra nova do modelo. Sem sal, a chave é a de sempre.
+FINALIDADES_COM_SAL = ("juiz", "sintetizador")
+_sal_llm: contextvars.ContextVar = contextvars.ContextVar("replay_sal_llm", default="")
+
+
+def sal_atual() -> str:
+    return _sal_llm.get()
+
+
+class com_sal:
+    """`with com_sal("rep1"):` acrescenta ao sal vigente (contexto async-safe; `asyncio.to_thread` herda)."""
+
+    def __init__(self, sufixo: str):
+        self.novo = ":".join(x for x in (_sal_llm.get(), sufixo) if x)
+        self._tok = None
+
+    def __enter__(self):
+        self._tok = _sal_llm.set(self.novo)
+        return self
+
+    def __exit__(self, *a):
+        try:
+            _sal_llm.reset(self._tok)
+        except (ValueError, RuntimeError):
+            _sal_llm.set("")
+        return False
+
+
 def dir_cassetes() -> Path:
     d = os.environ.get("CASSETES_DIR")
     return Path(d).expanduser().resolve() if d else telemetria.RAIZ / "eval" / "cassettes"
@@ -507,8 +537,10 @@ def _do_cassete(m: str, metodo: str, k: str, url: str, max_bytes: Optional[int])
 
 
 def _executar(metodo: str, url_chave: str, corpo_chave: Any, ao_vivo: Callable[[], Resposta],
-              max_bytes: Optional[int] = None) -> Resposta:
+              max_bytes: Optional[int] = None, sal_chave: str = "") -> Resposta:
     m = _modo_efetivo(url_chave)
+    if sal_chave:  # amostra independente do LLM: o sal entra na chave do cassete
+        corpo_chave = {"__sal__": sal_chave, "corpo": corpo_chave}
     k = chave(metodo, url_chave, corpo_chave)
     resp = _do_cassete(m, metodo, k, url_chave, max_bytes)
     if resp is not None:
@@ -570,8 +602,8 @@ def _esperar_limite_openrouter() -> None:
         time.sleep(espera)
 
 
-def http_post(url: str, json: Any = None, **kw: Any) -> Resposta:  # noqa: A002 (espelha requests)
-    """POST síncrono (curl_cffi). Corpo JSON entra na chave (headers não)."""
+def http_post(url: str, json: Any = None, sal: str = "", **kw: Any) -> Resposta:  # noqa: A002 (espelha requests)
+    """POST síncrono (curl_cffi). Corpo JSON entra na chave (headers não); `sal` também (ver `sal_atual`)."""
     def _vivo() -> Resposta:
         args = _args_curl(kw)
         if json is not None:
@@ -593,7 +625,7 @@ def http_post(url: str, json: Any = None, **kw: Any) -> Resposta:  # noqa: A002 
             telemetria.evento("rate_limit", alvo="openrouter", http=429, espera_s=espera)
             time.sleep(espera)
         return _de_resposta(r, url)
-    return _executar("POST", url, json, _vivo)
+    return _executar("POST", url, json, _vivo, sal_chave=sal)
 
 
 async def ahttp_get(url: str, max_bytes: Optional[int] = None, headers: Optional[Dict[str, str]] = None,
@@ -698,6 +730,9 @@ def llm_post(url: str, payload: Dict[str, Any], headers: Optional[Dict[str, str]
     kw: Dict[str, Any] = {"timeout": timeout}
     if headers is not None:
         kw["headers"] = headers
+    if fin in FINALIDADES_COM_SAL and _sal_llm.get():
+        kw["sal"] = _sal_llm.get()
+        base["sal"] = kw["sal"]
     t0 = time.perf_counter()
     try:
         r = http_post(url, json=payload, **kw)

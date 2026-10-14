@@ -28,6 +28,13 @@ def _int(name: str, default: int) -> int:
         return default
 
 
+def _bool(name: str, default: bool = False) -> bool:
+    bruto = os.getenv(name, "").strip().lower()
+    if not bruto:
+        return default
+    return bruto in ("1", "true", "on", "sim", "yes")
+
+
 TELEGRAM_TOKEN = _get("TELEGRAM_TOKEN")
 SERPAPI_KEY = _get("SERPAPI_KEY")
 OPENROUTER_API_KEY = _get("OPENROUTER_API_KEY")
@@ -164,3 +171,8 @@ E4_MARCO_MAX_DIAS = _janela_positiva("E4_MARCO_MAX_DIAS", 60)
 # Cascata de extração: ReaderLM-v2 como penúltimo nível (desligado por padrão; servidor próprio)
 EXTRACAO_READERLM = _get("EXTRACAO_READERLM", "0")
 READERLM_BASE_URL = _get("READERLM_BASE_URL", "http://127.0.0.1:8889/v1")
+
+# Modo de avaliação (auditoria E, A1): só a API subida para uma simulação liga isto. Habilita os campos
+# `eval_excluir_urls` (fonte deixada de fora) e `eval_repeticao` (juiz sem cache) da EntradaConsulta; sem
+# ele esses campos são ignorados (com `fallback onde=eval`). Nunca ligar em produção.
+EVAL_MODO = _bool("EVAL_MODO", False)

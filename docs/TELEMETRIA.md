@@ -60,12 +60,13 @@ n_fallbacks, fallbacks_por_onde, descartes_por_motivo, n_erros, dur_ms, nivel}`.
 
 | tipo | campos | quem emite hoje |
 |---|---|---|
-| `run_inicio` | meta: `entrada`, `tipo`, `usar_llm`, `config{IO_MODO, SERP_ESTRATEGIA, SERP_ENGINE, serpapi_ativo, openrouter_ativo, OPENROUTER_MODEL, UNSLOTH_*, detector, JUIZ_MAX_NOTICIAS, LLM_DAILY_CAP}` (+ `caso_id`, `rotulo`, `esperado` no eval) | `Pipeline.executar`, eval |
+| `run_inicio` | meta: `entrada`, `tipo`, `usar_llm`, `config{IO_MODO, SERP_ESTRATEGIA, SERP_ENGINE, serpapi_ativo, openrouter_ativo, OPENROUTER_MODEL, UNSLOTH_*, detector, JUIZ_MAX_NOTICIAS, LLM_DAILY_CAP}` (+ `caso_id`, `rotulo`, `esperado` no eval; `eval{modo, excluir_urls, repeticao}` quando o caso usa recursos de avaliação) | `Pipeline.executar`, eval |
 | `run_meta` | meta extra de um `iniciar_run` aninhado | idem |
+| `eval_exclusao` | `url`, `onde` (indice\|web): uma página tirada do caso porque é a `url_checagem` que a avaliação deixou de fora (só com `EVAL_MODO=1`; ver §2 e `eval/README.md`) | `eval_modo.filtrar_pecas`, `agente.EstadoBusca.absorver` |
 | `run_fim` | `dur_ms`, `ok`, `erro`, `nivel` | `finalizar_run` |
 | `etapa` | `nome`, `status` (ok\|parcial\|falha\|pulada), `detalhe`, `n_fontes`. Com `nome=agente-onda` (1 por busca do agente; só no trace, não no recibo): `onda`, `afirmacao`, `query`, `motivo` (consulta\|agencias\|reformulada), `n_resultados`, `n_novos`, `serpapi` (ok\|vazio\|cap\|erro\|timeout\|reuso), `cache`, `reuso` | `etapa()` do pipeline; `agente._executar_onda` |
 | `agente` | decisão do crítico pós-juiz, 1 por afirmação por rodada: `afirmacao`, `decisao` (parar\|nova_onda), `motivo`, `contagens{SUSTENTA, REFUTA, RELATA_SEM_ENDOSSO, NAO_TRATA, sem_juiz, clusters_postura, veredito_aplicavel}`, `extras_feitas`, `buscas_restantes` | `agente.criticar` |
-| `llm` | `motor` (llm-local\|openrouter\|openrouter-decisions), `modelo`, `finalidade`, `latencia_ms`, `prompt_sha`, `n_chars_prompt`, `saida` (truncada), `erro`, `cache` (live\|hit\|miss), `status` | `replay.llm_post` |
+| `llm` | `motor` (llm-local\|openrouter\|openrouter-decisions), `modelo`, `finalidade`, `latencia_ms`, `prompt_sha`, `n_chars_prompt`, `saida` (truncada), `erro`, `cache` (live\|hit\|miss), `status`, `sal` (só quando o cassete do juiz/sintetizador foi salgado: repetição ou voto extra) | `replay.llm_post` |
 | `http` | `metodo`, `url` (redigida), `status`, `bytes`, `latencia_ms`, `cache` (live\|hit\|miss), `erro`, `truncado`, `gravado` | todo wrapper do `replay` |
 | `fonte` | `url`, `estagio` (deep-crawl\|descoberta-site\|relatorio\|**data**), `decisao` (mantida\|descartada\|**descontada**), `motivo` (+ `tipo_fonte`, `corpo_lido`, `confianca` no estágio relatorio; no estágio `data`: `afirmacao`, `data_pub`, `data_pub_bruta`, `precisao`, `r`, `bits`) | aprofundar, descoberta_site, `Pipeline.executar`, `Pipeline._emitir_decisao` (estágio `data`, 1 por fonte com desconto temporal) |
 | `fonte` (`estagio=aplicabilidade`) | 1 por par (peça da base julgada, afirmação) na fase base: `url`, `afirmacao` (índice), `classe`, `corpo_lido`, `veredito`, `decisao` (aplicavel\|inaplicavel), `motivo` (de `e_aplicavel`: corpo não lido, juiz não trata do fato, sem citação verificada, sem selo com direção, data incompatível, aplicável). E4: `janela` (dias do marcador relativo; None = sem), `marco` (`[data_evento ISO, folga]` da data explícita do fato; None = sem), `excedente` (dias além da janela ou do marco; None = não mede), `referencia` (YYYY-MM-DD do "hoje" da checagem; None = ausente) | `Pipeline._fase_base` |
@@ -116,6 +117,7 @@ temporal; `valor` = bruta[:40]; `motivo` = `formato não reconhecido`, ou `sem �
 relativa, p.ex. "há 3 dias", e não há data para ancorá-la; na entrada por link, `motivo` = o erro do trafilatura quando ele falha ao extrair a data),
 `dns` (P3: o domínio de uma página a ler não resolveu mesmo após uma nova tentativa; antes isso aparecia como
 "url insegura (SSRF)". `motivo` = `não resolveu o domínio`, com `url`),
+`eval` (`eval_excluir_urls`/`eval_repeticao` recebidos com `EVAL_MODO` desligado: ignorados, nada é escondido do pipeline),
 `config` (E4: `E4_*` (janelas e `E4_MARCO_MAX_DIAS`) inválido no ambiente, não inteiro > 0 → usa o
 default; `motivo` = o aviso, p.ex. `E4_JANELA_HOJE='0' inválido (esperado inteiro > 0); usando 2`; emitido no
 início de cada execução).
@@ -204,6 +206,14 @@ cassete só existe se a URL passou no SSRF ao gravar).
 Pontos migrados: `afirmacoes` (2), `padroes_llm` (2), `llm_openrouter` (chat + decisions),
 `serpapi_layer` (1), `aprofundar._baixar`, `descoberta_site._fetch_aberto`. **Código novo que faz I/O
 deve usar esses wrappers** (fora deles não há replay nem telemetria).
+
+### Sal do cassete (repetições e autoconsistência)
+
+`replay.com_sal("rep1")` (contexto async-safe, `asyncio.to_thread` herda) acrescenta um sal à chave do cassete das
+chamadas de `replay.FINALIDADES_COM_SAL` (`juiz`, `sintetizador`). Com sal, a mesma chamada é uma **amostra nova** do
+modelo (live ou record grava um cassete próprio) e volta do cassete nas rodadas seguintes com o mesmo sal; sem sal, a
+chave é a de sempre. O pipeline usa para as repetições da avaliação (`eval_repeticao >= 1`, ver `eval_modo.sal_do_juiz`)
+e para os votos extras da autoconsistência (A3). O evento `llm` registra o `sal`.
 
 ### SerpAPI: contagem e cota
 

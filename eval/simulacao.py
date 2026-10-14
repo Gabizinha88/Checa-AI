@@ -136,15 +136,28 @@ def buscas_serpapi_do_run(dir_run: Optional[Path]) -> Optional[int]:
     return n
 
 
+def payload_do_caso(frase: Dict[str, Any], excluir_fonte: bool = False, repeticao: int = 0) -> Dict[str, Any]:
+    """Corpo do `POST /checar`. `excluir_fonte`: a `url_checagem` do caso vai em `eval_excluir_urls` (a API só
+    a honra com EVAL_MODO=1); `repeticao` >= 1 isola o cache do juiz (auditoria E, A1)."""
+    p: Dict[str, Any] = {"tipo": "titulo" if len(frase["texto"]) <= 140 else "texto", "conteudo": frase["texto"]}
+    if excluir_fonte and frase.get("url_checagem"):
+        p["eval_excluir_urls"] = [frase["url_checagem"]]
+    if repeticao:
+        p["eval_repeticao"] = int(repeticao)
+    return p
+
+
 def executar_caso(frase: Dict[str, Any], enviar: Callable[[Dict[str, Any]], Dict[str, Any]],
                   dir_runs: Path = RAIZ / "runs",
-                  uso_serpapi: Optional[Callable[[], Optional[int]]] = None) -> Dict[str, Any]:
+                  uso_serpapi: Optional[Callable[[], Optional[int]]] = None,
+                  excluir_fonte: bool = False, repeticao: int = 0) -> Dict[str, Any]:
     """Envia a frase pelo endpoint do usuário e devolve o registro do caso. Nunca levanta."""
-    registro: Dict[str, Any] = {"frase": frase, "erro": None}
+    registro: Dict[str, Any] = {"frase": frase, "erro": None, "repeticao": repeticao,
+                                "fonte_excluida": bool(excluir_fonte and frase.get("url_checagem"))}
     t0, inicio = time.time(), time.time()
     antes = uso_serpapi() if uso_serpapi else None
     try:
-        rel = enviar({"tipo": "titulo" if len(frase["texto"]) <= 140 else "texto", "conteudo": frase["texto"]})
+        rel = enviar(payload_do_caso(frase, excluir_fonte, repeticao))
     except Exception as e:  # registra e segue para a próxima frase
         registro.update(erro=f"{type(e).__name__}: {e}"[:400], tempo_s=round(time.time() - t0, 1))
         return registro

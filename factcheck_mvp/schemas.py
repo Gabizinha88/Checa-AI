@@ -38,6 +38,11 @@ class EntradaConsulta(BaseModel):
     # E4 (A5): entrada por link cuja página não tem data: E4 desligado de forma explícita,
     # sem cair no relógio de hoje. Exclusivo com `data_referencia`.
     sem_referencia_temporal: bool = False
+    # Só para avaliação (auditoria E, A1); ignorados fora de `config.EVAL_MODO`. `eval_excluir_urls`: URLs que o
+    # pipeline deve tratar como inexistentes (a checagem de onde o caso saiu); `eval_repeticao`: nº da repetição
+    # (>= 1 isola o cache do juiz; 0 = comportamento normal).
+    eval_excluir_urls: List[str] = Field(default_factory=list, max_length=20)
+    eval_repeticao: int = Field(default=0, ge=0, le=50)
 
     @field_validator("data_referencia")
     @classmethod

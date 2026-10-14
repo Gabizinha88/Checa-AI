@@ -12,6 +12,7 @@ Saída: reports/simulacao_AAAA-MM-DD_HHMM/{relatorio.html,dados.json}
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -57,6 +58,11 @@ def main(argv=None) -> int:
                     help="interrompe ao atingir N buscas na SerpAPI (casos restantes: não executados)")
     ap.add_argument("--confirmar", action="store_true", help="sem isto, só sorteia, estima e para")
     ap.add_argument("--frases", type=Path, default=sim.ARQ_FRASES)
+    ap.add_argument("--repeticoes", type=int, default=1,
+                    help="roda cada frase K vezes; da 2ª em diante o juiz não reaproveita o cassete (A1)")
+    ap.add_argument("--excluir-fonte", action="store_true",
+                    help="deixa de fora do índice e da web a url_checagem do caso (a API precisa de EVAL_MODO=1)")
+    ap.add_argument("--rotulo", default="", help="nome da rodada (vai no meta e no nome da pasta)")
     ap.add_argument("--mostrar", action="store_true", help="lista as frases sorteadas por inteiro antes de rodar")
     ap.add_argument("--saida", type=Path, default=RAIZ / "reports")
     a = ap.parse_args(argv)
@@ -96,7 +102,8 @@ def main(argv=None) -> int:
     meta = {"inicio": sim.agora_iso(), "seed": a.seed, "n": a.n, "url": a.url, "commit": _commit(),
             "frases": str(a.frases.relative_to(RAIZ)) if a.frases.is_relative_to(RAIZ) else str(a.frases),
             "faltas": faltas, "estimativa_serpapi": est, "cota_serpapi_antes": cota,
-            "concorrencia": a.concorrencia, "max_buscas": a.max_buscas}
+            "concorrencia": a.concorrencia, "max_buscas": a.max_buscas, "repeticoes": max(1, a.repeticoes),
+            "excluir_fonte": bool(a.excluir_fonte), "rotulo": a.rotulo}
 
     def enviar(payload):
         r = httpx.post(f"{a.url}/checar", json=payload, timeout=200)
@@ -134,7 +141,7 @@ def main(argv=None) -> int:
 
     meta["fim"], meta["cota_serpapi_depois"] = sim.agora_iso(), _cota_serpapi_conta()
     dados = sim.montar(regs, meta, sim.urls_da_base())
-    pasta = sim.gravar(dados, a.saida / f"simulacao_{inicio:%Y-%m-%d_%H%M}")
+    pasta = sim.gravar(dados, pasta)
     print("\n" + sim.resumo_terminal(dados, pasta))
     return 0
 

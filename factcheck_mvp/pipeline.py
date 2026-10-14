@@ -23,8 +23,8 @@ import re
 import unicodedata
 from typing import Any, Awaitable, Callable, Dict, List, Literal, Optional, Tuple
 
-from . import (afirmacoes, aplicabilidade, avaliador, confiabilidade, config, corroboracao, decisao, juiz_llm,
-               padroes_llm, replay, selos, telemetria)
+from . import (afirmacoes, aplicabilidade, avaliador, confiabilidade, config, corroboracao, decisao, eval_modo,
+               juiz_llm, padroes_llm, replay, selos, telemetria)
 from . import agente as _agente
 from .agregador import perguntas_guia, texto_de_linha
 from .aprofundar import aprofundar
@@ -168,6 +168,7 @@ class Pipeline:
         from . import indice as _indice
         telemetria.iniciar_run({
             "entrada": entrada.conteudo[:500], "tipo": entrada.tipo, "usar_llm": usar_llm,
+            "eval": eval_modo.meta_para_trace(entrada),
             "config": {"IO_MODO": replay.modo_atual(),
                        "SERP_ESTRATEGIA": getattr(config, "SERP_ESTRATEGIA", ""),
                        "SERP_ENGINE": getattr(config, "SERP_ENGINE", ""),
@@ -185,7 +186,8 @@ class Pipeline:
                        "JUIZ_MAX_NOTICIAS": config.JUIZ_MAX_NOTICIAS, "JUIZ_LOTE": config.JUIZ_LOTE,
                         "JUIZ_TRECHO_MAX": config.JUIZ_TRECHO_MAX}})
         try:
-            rel = await self._executar(entrada, progresso, usar_llm)
+            with replay.com_sal(eval_modo.sal_do_juiz(entrada)):  # A1: repetição >= 1 não reusa o juiz gravado
+                rel = await self._executar(entrada, progresso, usar_llm)
         except BaseException as e:
             telemetria.evento("erro", onde="pipeline", erro=f"{type(e).__name__}: {e}")
             telemetria.finalizar_run(None, erro=f"{type(e).__name__}: {e}"[:500])
@@ -216,12 +218,13 @@ class Pipeline:
         # Curada > plataforma (rede social/UGC) > institucional > muito acessada (Tranco) > pouco acessada
         p["confiabilidade"] = confiabilidade.classificar(p.get("url", ""), p["curada"])
 
-    async def _buscar_web(self, afs: List[Afirmacao], avisar, etapa, limitacoes
+    async def _buscar_web(self, afs: List[Afirmacao], avisar, etapa, limitacoes, excluidas: frozenset = frozenset()
                           ) -> Tuple[List[Dict[str, Any]], Optional["_agente.EstadoBusca"]]:
         """SerpAPI (agente ou estático) com a CONSULTA de cada afirmação. -> (peças web, estado do agente)."""
         if (getattr(config, "SERP_ESTRATEGIA", "") or "").strip().lower() == "agente":
             await avisar("Agente de busca: onda 1…")
             estado = _agente.EstadoBusca.novo()  # POR REQUISIÇÃO: nada compartilhado entre consultas
+            estado.excluir = excluidas
             alvos = _agente.alvos_de(afs[: config.MAX_AFIRMACOES])
             await _agente.onda1(estado, self.serpapi, alvos)
             if estado.parar_motivo == "timeout":
@@ -262,6 +265,9 @@ class Pipeline:
         pecas = []
         for d in brutas:
             if not d.get("url"):
+                continue
+            if eval_modo.foi_excluida(d["url"], excluidas):
+                telemetria.evento("eval_exclusao", url=d["url"], onde="web")
                 continue
             ais = {i for i, af in enumerate(afs) if (af.consulta or af.alvo()).strip() == d.get("_afirmacao")}
             pecas.append(self._peca_web(d, ais or {0}))
@@ -357,6 +363,7 @@ class Pipeline:
         # 3. Atalho opcional: índice de checagens (ClaimReview/RSS) — só a base (E1)
         pecas_base: List[Dict[str, Any]] = []
         estado_agente: Optional[_agente.EstadoBusca] = None
+        excluidas = eval_modo.urls_excluidas(entrada)  # A1: só avaliação; vazio em produção
         if _indice.habilitado() and hasattr(self.idx_ver, "buscar_checagens"):
             n_hits = 0
             for ai, af in enumerate(afs):
@@ -365,6 +372,7 @@ class Pipeline:
                 except Exception as e:
                     telemetria.fallback("indice", f"{type(e).__name__}: {e}")
                     hits = []
+                hits = eval_modo.filtrar_pecas(hits, excluidas, "indice")
                 for h in hits:
                     if not h.get("url"):
                         continue
@@ -461,7 +469,7 @@ class Pipeline:
             pecas = list(pecas_base)
             if self.serpapi.ativo:
                 await avisar("Consultando a web…")
-                pecas_web, estado_agente = await self._buscar_web(afs, avisar, etapa, limitacoes)
+                pecas_web, estado_agente = await self._buscar_web(afs, avisar, etapa, limitacoes, excluidas)
                 pecas += pecas_web
             else:
                 etapa("descoberta", "pulada", "SERPAPI_KEY ausente: sem busca aberta.")
