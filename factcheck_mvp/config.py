@@ -176,3 +176,6 @@ READERLM_BASE_URL = _get("READERLM_BASE_URL", "http://127.0.0.1:8889/v1")
 # `eval_excluir_urls` (fonte deixada de fora) e `eval_repeticao` (juiz sem cache) da EntradaConsulta; sem
 # ele esses campos são ignorados (com `fallback onde=eval`). Nunca ligar em produção.
 EVAL_MODO = _bool("EVAL_MODO", False)
+# Missão F / A4: seleção do trecho do juiz. "novo" (padrão) = título + lide + conclusão/veredito + frases com
+# termos, sem boilerplate (trecho_juiz.py); "antigo" = lide de 2 frases + frases com termos (p/ medir antes/depois).
+JUIZ_TRECHO_MODO = _get("JUIZ_TRECHO_MODO", "novo").strip().lower()
