@@ -94,7 +94,7 @@ import math
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 
-from . import aplicabilidade, confiabilidade, selos
+from . import aplicabilidade, confiabilidade, observabilidade, selos
 
 # ------------------------------------------------------------------ parâmetros (únicos)
 TAU = math.log(3)            # faixa média: |L| < ln 3  <=>  0,25 < p < 0,75
@@ -674,7 +674,9 @@ def decidir(ev: Evidencias) -> Decisao:
     dec = Decisao(nivel="indeterminada", log_odds=0.0, prob=0.5, motivo="",
                   travas={"vago": ev.vago, "opiniao": ev.opiniao, "rumor": ev.rumor, "sem_fonte_confiavel": False,
                           "so_fontes_de_outro_periodo": False, "parte_sem_checagem_atual": False,
-                          "juiz_disponivel": ev.juiz_disponivel},
+                          "juiz_disponivel": ev.juiz_disponivel,
+                          # Missão F / 8: "nada para julgar" (sem itens) não é "juiz indisponível"
+                          "juiz_estado": observabilidade.estado_juiz(len(ev.itens), ev.juiz_disponivel)},
                   parametros={"tau": round(TAU, 4), "w_postura": W_POSTURA, "w_veredito": W_VEREDITO,
                               "f_nao_curada": F_NAO_CURADA, "f_veredito_nao_curada": F_VEREDITO_NAO_CURADA,
                               "f_postura_por_nivel": dict(confiabilidade.FATOR_POSTURA),

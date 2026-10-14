@@ -26,6 +26,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Literal, Optional, Tupl
 from . import (afirmacoes, aplicabilidade, avaliador, confiabilidade, config, corroboracao, decisao, eval_modo,
                juiz_llm, padroes_llm, replay, selos, telemetria)
 from . import agente as _agente
+from . import observabilidade
 from .agregador import perguntas_guia, texto_de_linha
 from .aprofundar import aprofundar
 from .catalogo import Catalogo
@@ -451,18 +452,15 @@ class Pipeline:
                       f"{len(julg) - _n_sem}/{len(julg)} avaliação(ões) 1:1 (manchete+corpo, base).",
                       [pecas[pi]["url"] for (pi, _), r in julg.items()
                        if r.get("classe") in juiz_llm.COM_POSTURA][:5])
-                etapa("juiz", "ok" if juiz_ok and not _n_sem else ("parcial" if juiz_ok else "falha"),
-                      f"{len(julg)} julgamento(s) via {_motor_j}: {_n['SUSTENTA']} sustentam, "
-                      f"{_n['REFUTA']} refutam, {_n['RELATA_SEM_ENDOSSO']} só relatam, "
-                      f"{_n['NAO_TRATA']} fora do tema ({_n_reb} rebaixada(s) por citação não verificada); "
-                      f"{_n_sem} sem julgamento.",
+                etapa("juiz", *observabilidade.etapa_juiz(len(selecionados), julg, juiz_ok, _n, _n_sem,
+                                                          _n_reb, _motor_j),
                       [pecas[pi]["url"] for (pi, _), r in julg.items()
                        if r.get("classe") in juiz_llm.COM_POSTURA][:5])
                 if not juiz_ok:
                     limitacoes.append("Sem julgamento de conteúdo (LLM-juiz indisponível): "
                                       "o nível fica indeterminado; as fontes estão listadas para comparação.")
             else:
-                etapa("juiz", "pulada", "Nenhuma fonte candidata para julgar.")
+                etapa("juiz", *observabilidade.etapa_juiz(0, {}, False, {}, 0, 0, ""))
 
         if not pulou_web:
             # 4. Busca aberta (SerpAPI) — fluxo inalterado quando a base não resolve
@@ -553,16 +551,13 @@ class Pipeline:
                 if n_sem and juiz_ok:
                     limitacoes.append(f"Avaliação parcial: {len(julg) - n_sem}/{len(julg)} peça(s) avaliada(s) "
                                       "(teto de tempo/cap; parcial preservado).")
-                etapa("juiz", "ok" if juiz_ok and not n_sem else ("parcial" if juiz_ok else "falha"),
-                      f"{len(julg)} julgamento(s) via {motor_j}: {n['SUSTENTA']} sustentam, {n['REFUTA']} refutam, "
-                      f"{n['RELATA_SEM_ENDOSSO']} só relatam, {n['NAO_TRATA']} fora do tema "
-                      f"({n_reb} rebaixada(s) por citação não verificada); {n_sem} sem julgamento.",
+                etapa("juiz", *observabilidade.etapa_juiz(len(selecionados), julg, juiz_ok, n, n_sem, n_reb, motor_j),
                       [pecas[pi]["url"] for (pi, _), r in julg.items() if r.get("classe") in juiz_llm.COM_POSTURA][:5])
                 if not juiz_ok:
                     limitacoes.append("Sem julgamento de conteúdo (LLM-juiz indisponível): "
                                       "o nível fica indeterminado; as fontes estão listadas para comparação.")
             else:
-                etapa("juiz", "pulada", "Nenhuma fonte candidata para julgar.")
+                etapa("juiz", *observabilidade.etapa_juiz(0, {}, False, {}, 0, 0, ""))
 
         # 8b. Agente: crítico PÓS-JUIZ decide, por afirmação, se gasta uma onda extra
         if estado_agente is not None:

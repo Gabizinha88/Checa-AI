@@ -124,6 +124,42 @@ início de cada execução).
 
 **Regra:** todo fallback novo deve chamar `telemetria.fallback(onde, motivo)`.
 
+### Observabilidade do LLM e do juiz (Missão F, item 8)
+
+Só descreve; não muda decisão nem nível. Código em `factcheck_mvp/observabilidade.py`.
+
+**Campos novos do evento `llm`** (os de `replay.llm_post`, quando a resposta traz):
+
+- `usage`: `prompt_tokens`, `completion_tokens`, `total_tokens`, `custo` (USD, `usage.cost` do OpenRouter),
+  `reasoning_tokens` (`completion_tokens_details`), `cached_tokens` (`prompt_tokens_details`). Só as chaves presentes;
+  o endpoint Decisions (`input_tokens`/`output_tokens`) é normalizado para os mesmos nomes. Sem `usage` na resposta,
+  o campo não existe. Numa chamada de cassete (`cache=hit`) o `usage` é o da resposta gravada, não um gasto de agora.
+- `finish_reason`: `choices[0].finish_reason` (`stop`, `length`…). `length` com `reasoning_tokens` próximo de
+  `completion_tokens` é a causa de saída cortada no meio (ex.: `reformular` com `max_tokens=300`:
+  `{"consulta": "Sérgio Sacani e`): o provedor devolveu o texto assim, o trace não truncou.
+
+**`saida` do evento `llm`**: com `TELEMETRIA_PROMPTS=1` vai inteira (até `LIMITE_PROMPT`=60000 chars, já com
+redação de segredos), para todas as finalidades, inclusive `reformular`. Sem a flag fica em `LIMITE_STR`=2000
+(`…[+N chars]`), então o trace padrão não incha.
+
+**Juiz indisponível x nada para julgar.** `juiz_disponivel=false` valia nos dois casos. Agora:
+
+| estado | quando | etapa `juiz` |
+|---|---|---|
+| `nada_para_julgar` | zero páginas candidatas; o juiz nem foi chamado | `pulada`, "Nada para julgar: nenhuma fonte candidata…" |
+| `indisponivel` | havia candidatas e nenhuma foi classificada (LLM falhou, sem chave, desligado ou teto) | `falha`, "Juiz indisponível: N/M julgamento(s) sem resposta do LLM (motivo)." |
+| `disponivel` | o juiz classificou ao menos um item | `ok`/`parcial`, texto de sempre |
+
+- Evento `juiz_estado` (1 por execução, junto da etapa `juiz`): `estado`, `n_candidatas`, `n_julgadas`,
+  `n_sem_julgamento`, `motivo` (primeiro erro do juiz; só em `indisponivel`).
+- `travas.juiz_estado` no evento `decisao` (mesmos três valores; sem itens = `nada_para_julgar`). O booleano
+  `travas.juiz_disponivel` continua como era (snapshots do eval o leem).
+
+**Langfuse** (`langfuse_export`): a generation ganha `usageDetails` {input, output, total} e, com custo conhecido
+e chamada ao vivo, `costDetails` {total}; `reasoning_tokens`, `cached_tokens` e `finish_reason` vão em `metadata`
+(o raciocínio já está em `output`, então não entra em `usageDetails` para não contar duas vezes). Chamada de
+cassete leva os tokens, mas não o custo.
+
 ### Parâmetros do E4
 
 Lidos de `factcheck_mvp/config.py`: inteiro > 0 pelo ambiente; valor inválido vira o padrão e emite `fallback onde=config` no início da execução. A janela é quantos dias a fonte pode estar defasada em relação à referência do marcador sem ser descontada.

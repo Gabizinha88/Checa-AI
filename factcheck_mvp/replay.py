@@ -53,7 +53,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import curl_cffi.requests
 from curl_cffi.requests.exceptions import RequestException as _CurlRequestException
 
-from . import telemetria
+from . import observabilidade, telemetria
 
 MODOS = ("live", "record", "replay")
 _SEGREDOS_QUERY = {"api_key", "apikey", "api-key", "key", "token", "access_token",
@@ -743,16 +743,20 @@ def llm_post(url: str, payload: Dict[str, Any], headers: Optional[Dict[str, str]
         raise
     lat = round((time.perf_counter() - t0) * 1000, 1)
     saida, erro = "", None
+    extras: Dict[str, Any] = {}  # Missão F / 8: tokens, custo e motivo de parada, quando o provedor devolve
     if r.status_code >= 400:
         erro = f"HTTP {r.status_code}: {r.text[:300]}"
     else:
         try:
             d = r.json()
             saida = (extrair or _saida_chat)(d)
+            extras = {k: v for k, v in (("usage", observabilidade.usage_da_resposta(d)),
+                                        ("finish_reason", observabilidade.finish_reason_da_resposta(d)))
+                      if v is not None}
         except Exception as e:
             erro = f"resposta não-JSON: {e}"[:300]
     telemetria.evento("llm", **base, latencia_ms=lat, saida=saida, erro=erro, cache=r.cache,
-                      status=r.status_code)
+                      status=r.status_code, **extras)
     return r
 
 
