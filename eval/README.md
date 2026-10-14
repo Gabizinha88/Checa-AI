@@ -172,3 +172,26 @@ vota) e não guarda `texto_usuario` nem `data_referencia` (o E4 não vale nela).
 fidelidade, use os snapshots de runs com evento `evidencias`.
 
 Testes do harness: `tests/test_eval_harness.py` (Pipeline falso, sem rede).
+
+## Simulação honesta (auditoria E, A1)
+
+Os 78% da simulação de 13/10 eram em boa parte circulares: em 26 dos 28 casos resolvidos pelo índice, a evidência
+era a própria `url_checagem` do caso. Para medir a busca de verdade:
+
+```bash
+# API em modo de avaliação (EVAL_MODO=1 liga os campos eval_* do POST /checar; nunca em produção)
+EVAL_MODO=1 IO_MODO=record TELEMETRIA_PROMPTS=1 INDICE_CHECAGENS=1 SERP_ENGINE=google_news   .venv/Scripts/python.exe -m uvicorn factcheck_mvp.api:app --port 8000
+python3 scripts/simular_usuario.py --n 50 --seed 42 --excluir-fonte --repeticoes 3 --rotulo base --confirmar --max-buscas 55
+python3 -m eval.comparar_simulacoes reports/simulacao_A reports/simulacao_B --nomes base,final --runs runs
+```
+
+- `--excluir-fonte`: a `url_checagem` do caso vai em `eval_excluir_urls` e o pipeline a trata como inexistente no
+  índice e nos resultados da web (URL normalizada: sem esquema, `www.`, query e barra final; evento `eval_exclusao`).
+  Fica de fora só a fonte de onde a frase saiu: outras checagens do mesmo fato continuam valendo.
+- `--repeticoes K`: cada frase K vezes. A repetição 0 usa os cassetes de sempre; as demais salgam o cassete do juiz
+  (`replay.com_sal`), então o juiz é uma amostra nova a cada repetição, enquanto as buscas vêm do cassete.
+  Cada execução tem o seu `run_id` em `dados.json`; `parcial.jsonl` na pasta é o checkpoint.
+- `eval/comparar_simulacoes.py`: acerto com IC95 de Wilson por categoria, caminho (base x web) e geral, `antigas` à
+  parte, erro grave, mudança de nível entre repetições, McNemar pareado (células e casos) e, com `--runs`, % de itens
+  do juiz com frase de veredito no trecho, consultas vazias e casos que acharam alguma agência.
+- Sem `EVAL_MODO=1` os campos `eval_*` são ignorados (com `fallback onde=eval`).

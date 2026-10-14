@@ -109,6 +109,23 @@ def test_llm_post_emite_evento_llm(amb, monkeypatch):
     assert "segredosegredo" not in (amb / "runs" / rid / "trace.jsonl").read_text(encoding="utf-8")
 
 
+def test_llm_post_grava_prompt_inteiro_so_com_telemetria_prompts(amb, monkeypatch):
+    longo = "x" * 5000  # acima do truncamento padrão (2000)
+    payload = {"model": "m1", "messages": [{"role": "system", "content": "Regras"},
+                                           {"role": "user", "content": longo + " Authorization: Bearer sk-or-v1-segredosegredo123"}]}
+    monkeypatch.setattr(_curl, "post", lambda url, **k: FakeResp({"choices": [{"message": {"content": longo}}]}))
+    rid = tel.iniciar_run({})
+    replay.llm_post("http://h/v1/chat/completions", payload, finalidade="juiz")  # padrão: sem prompt
+    monkeypatch.setenv("TELEMETRIA_PROMPTS", "1")
+    replay.llm_post("http://h/v1/chat/completions", payload, finalidade="juiz")
+    tel.finalizar_run(None)
+    sem, com = _eventos(amb, rid, "llm")
+    assert "prompt" not in sem and sem["saida"].endswith("chars]")  # saída truncada como antes
+    assert com["prompt"][0] == {"role": "system", "content": "Regras"}
+    assert len(com["prompt"][1]["content"]) > 5000 and "segredosegredo" not in com["prompt"][1]["content"]
+    assert com["saida"] == longo  # sem corte
+
+
 def test_finalidade_inferida_do_chamador(amb, monkeypatch):
     monkeypatch.setattr(_curl, "post", lambda url, **k: FakeResp({"choices": [{"message": {"content": "x"}}]}))
     rid = tel.iniciar_run({})

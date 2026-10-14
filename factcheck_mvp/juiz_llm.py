@@ -28,6 +28,7 @@ from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, field_validator, model_validator
 
 from . import config, llm
+from .trecho_juiz import montar_trecho  # noqa: F401  (reexporta: chamadores usam juiz_llm.montar_trecho)
 
 log = logging.getLogger("factcheck.juiz")
 
@@ -35,10 +36,6 @@ CLASSES = ("SUSTENTA", "REFUTA", "RELATA_SEM_ENDOSSO", "NAO_TRATA")
 COM_POSTURA = ("SUSTENTA", "REFUTA")
 TRATA = ("SUSTENTA", "REFUTA", "RELATA_SEM_ENDOSSO")
 MOTOR_FALLBACK = "fallback-sem-juiz"
-
-_STOP = frozenset("""a o os as um uma de do da dos das em no na nos nas por pelo pela para com sem que se
-e ou mas como mais foi sao ser ter tem esta este isso essa ao aos nao sim sobre entre quando todo toda
-""".split())
 
 
 # ----------------------------------------------------------------------------- texto
@@ -48,41 +45,7 @@ def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
-def termos(texto: str) -> set:
-    return {t for t in _norm(texto).split() if len(t) >= 4 and t not in _STOP}
-
-
-def montar_trecho(titulo: str, corpo: str, afirmacao: str, limite: int = 0) -> str:
-    """Título + corpo até `limite` chars. Corpo longo: lide (2 frases) + frases com mais
-    termos da afirmação, na ordem original, separadas por ' … '."""
-    limite = limite or config.JUIZ_TRECHO_MAX or 3000
-    titulo = re.sub(r"\s+", " ", titulo or "").strip()
-    corpo = re.sub(r"\s+", " ", corpo or "").strip()
-    if corpo.startswith(titulo) and titulo:
-        corpo = corpo[len(titulo):].strip()
-    cabeca = (titulo + "\n") if titulo else ""
-    resto = max(0, limite - len(cabeca))
-    if len(corpo) <= resto:
-        return (cabeca + corpo).strip()
-    frases = [f for f in re.split(r"(?<=[.!?])\s+", corpo) if f]
-    alvo = termos(afirmacao)
-    pontos = [(len(alvo & termos(f)), -i, i) for i, f in enumerate(frases)]
-    escolhidas = {0, 1} & set(range(len(frases)))
-    usado = sum(len(frases[i]) + 3 for i in escolhidas)
-    for p, _, i in sorted(pontos, reverse=True):
-        if i in escolhidas or p == 0:
-            continue
-        if usado + len(frases[i]) + 3 > resto:
-            continue
-        escolhidas.add(i)
-        usado += len(frases[i]) + 3
-    partes, ant = [], -1
-    for i in sorted(escolhidas):
-        if ant >= 0 and i != ant + 1:
-            partes.append("…")
-        partes.append(frases[i])
-        ant = i
-    return (cabeca + " ".join(partes))[:limite].strip()
+# `montar_trecho` vive em trecho_juiz.py (Missão F / A4): uma só fonte da verdade.
 
 
 def verificar_citacao(citacao: str, texto: str) -> float:
@@ -179,13 +142,15 @@ Abaixo há {n} itens (páginas encontradas numa busca). Para CADA item, leia o t
 Regras:
 1. Julgue só pelo título e pelo trecho do item; não use conhecimento próprio.
 2. Parecido não é igual: "reduz o risco de" não é "cura"; "pode estar associado a" não é "causa"; estudo em células ou animais não é efeito comprovado em pessoas; outra vacina, outra data ou outro lugar não é a mesma afirmação. Nesses casos use RELATA_SEM_ENDOSSO.
+2b. Atribuição: se a AFIRMAÇÃO diz que alguém disse, escreveu ou fez algo, o que se julga é se essa pessoa o fez. "Fulano não disse isso" REFUTA; página que mostra Fulano dizendo X SUSTENTA, mesmo que X seja falso; página que desmente só o conteúdo X, sem tratar da autoria, é RELATA_SEM_ENDOSSO. Se a AFIRMAÇÃO é X sem autor e a página só nega que Fulano tenha dito X, use RELATA_SEM_ENDOSSO.
 3. Página que cita a AFIRMAÇÃO como exemplo de boato, mentira ou desinformação nunca SUSTENTA: é REFUTA se diz que ela é falsa, senão RELATA_SEM_ENDOSSO.
-4. "veredito_pagina", quando existe, é o selo que a própria página deu à alegação que ela checou; considere-o só se essa alegação for a mesma da AFIRMAÇÃO.
+3b. Silêncio ou inferência não refuta: a página que só descreve uma situação diferente, ou que nunca menciona a AFIRMAÇÃO (ex.: "casados desde 2019" não desmente uma separação que a página nem cita), não a contesta. REFUTA exige que a própria página desminta, conteste ou diga que não há comprovação da AFIRMAÇÃO; sem isso use NAO_TRATA ou RELATA_SEM_ENDOSSO.
+4. "veredito_pagina", quando existe, é o selo que a própria página deu à alegação que ela checou ("alegacao_checada"). Se essa alegação descreve os MESMOS fatos da AFIRMAÇÃO (mesmos sujeitos, ação e números, ainda que com outras palavras), a classe segue o selo: falso, boato ou enganoso é REFUTA; verdadeiro é SUSTENTA. Se a alegação checada for outra (outro fato, data, lugar ou pessoa), use RELATA_SEM_ENDOSSO. Se "alegacao_checada" for vaga ou só uma hashtag (ex.: "#CaiuNaRede"), compare a AFIRMAÇÃO com o título e o trecho.
 5. "pagina_diz": uma frase curta, em português, com o que a página afirma sobre o assunto.
-6. "citacao": copie LITERALMENTE, sem mudar nenhuma palavra e sem usar reticências, um trecho contínuo e curto (10 a 30 palavras) do título ou do trecho do item que justifique a classe. Não parafraseie e não traduza. Para NAO_TRATA use "".
-7. "raciocinio": em português, em até ~240 caracteres, o porquê da classe — o que a página afirma sobre a AFIRMAÇÃO que justifica a direção (sustenta, refuta, só relata ou não trata). Não avalie a credibilidade da fonte (isso é de outro módulo).
-8. Responda SOMENTE com JSON, em português, neste formato, com um objeto por item, na ordem:
-{{"itens": [{{"i": 0, "pagina_diz": "<frase curta>", "classe": "<SUSTENTA|REFUTA|RELATA_SEM_ENDOSSO|NAO_TRATA>", "citacao": "<trecho copiado do item>", "raciocinio": "<porquê da classe em até ~240 caracteres>"}}]}}
+6. "citacao": copie LITERALMENTE, sem mudar nenhuma palavra e sem usar reticências, um trecho contínuo e curto (10 a 30 palavras) do título ou do trecho do item em que a PÁGINA expressa o julgamento ou o fato que justifica a classe (ex.: "é falso", "não há evidência", "é verdadeiro", "confirmou"). Não copie só a descrição do boato ou a frase que circulou ("Boato – X…"): ela não mostra a posição da página. Para SUSTENTA e REFUTA evite trechos hedgeados ("parece", "pode", "supostamente"). Não parafraseie e não traduza. Para NAO_TRATA use "".
+7. "raciocinio": em português, em até ~240 caracteres, o porquê da classe — o que a página afirma sobre a AFIRMAÇÃO que justifica a direção (sustenta, refuta, só relata ou não trata). Se o raciocínio apontar uma ressalva que restringe o alcance da AFIRMAÇÃO (a página cobre só parte dela), a classe é RELATA_SEM_ENDOSSO, a menos que a própria página dê seu veredito à AFIRMAÇÃO nos mesmos termos. Não avalie a credibilidade da fonte (isso é de outro módulo).
+8. Responda SOMENTE com JSON, em português, neste formato, com um objeto por item, na ordem. Preencha os campos nesta ordem e decida a "classe" por último, depois de escrever a citação e o raciocínio:
+{{"itens": [{{"i": 0, "pagina_diz": "<frase curta>", "citacao": "<trecho copiado do item>", "raciocinio": "<porquê em até ~240 caracteres>", "classe": "<SUSTENTA|REFUTA|RELATA_SEM_ENDOSSO|NAO_TRATA>"}}]}}
 
 ITENS:
 {itens}"""

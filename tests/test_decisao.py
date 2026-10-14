@@ -81,11 +81,23 @@ def test_selo_verdadeiro_do_fato_ou_fake_baixa():
 
     T6: só o selo do ÍNDICE vota (origem_veredito="indice", via E1/aplicabilidade);
     selo de página (template/JSON-LD do próprio portal) não vota.
+    P2 (13/10): só com classe SUSTENTA/REFUTA (o juiz confirmou que é a mesma alegação).
     """
-    it = _it("https://g1.globo.com/fato-ou-fake/noticia/2024/x.ghtml", "RELATA_SEM_ENDOSSO",
+    it = _it("https://g1.globo.com/fato-ou-fake/noticia/2024/x.ghtml", "SUSTENTA",
              veredito="VERDADEIRO", veiculo="Fato ou Fake", origem="indice")
     d = decidir(_ev([it]))
     assert d.nivel == "baixa" and d.vereditos_aplicados[0]["veredito"] == "VERDADEIRO"
+
+
+def test_p2_selo_do_indice_nao_vota_quando_o_juiz_so_relata():
+    """Erro grave da simulação de 13/10: a página checava OUTRA alegação (juiz: RELATA_SEM_ENDOSSO),
+    o selo FALSO votou e, com polaridade 'nega', a propensão saiu baixa. Agora o selo não vota."""
+    it = _it("https://www.boatos.org/x", "RELATA_SEM_ENDOSSO", veredito="FALSO", veiculo="Boatos.org",
+             origem="indice")
+    for pol in ("afirma", "nega"):
+        d = decidir(_ev([it], pol=pol))
+        assert not d.vereditos_aplicados and d.nivel == "indeterminada"
+        assert "só relata" in d.vereditos_ignorados[0]["motivo"]
 
 
 def test_selo_falso_aplicavel_alta():
@@ -204,7 +216,7 @@ CASOS = [
     (lambda: _ev(_tres("REFUTA")), "alta"),
     (lambda: _ev(_tres("SUSTENTA")), "baixa"),
     (lambda: _ev(_tres("REFUTA"), pol="nega"), "baixa"),
-    (lambda: _ev([_it("https://g1.globo.com/f", "RELATA_SEM_ENDOSSO", veredito="VERDADEIRO",
+    (lambda: _ev([_it("https://g1.globo.com/f", "SUSTENTA", veredito="VERDADEIRO",
                        origem="indice")]), "baixa"),
     (lambda: _ev([_it("https://lupa.uol.com.br/x", "REFUTA", veredito="FALSO",
                        origem="indice")]), "alta"),
@@ -216,8 +228,8 @@ def test_mutacao_inverter_direcao_quebra_as_expectativas(monkeypatch):
     assert all(decidir(f()).nivel == esp for f, esp in CASOS)
     original = decisao._contribuicoes
 
-    def invertida(it, s, dec):
-        return [(-v, d) for v, d in original(it, s, dec)]
+    def invertida(it, s, dec, *args):
+        return [(-v, d) for v, d in original(it, s, dec, *args)]
     monkeypatch.setattr(decisao, "_contribuicoes", invertida)
     assert all(decidir(f()).nivel != esp for f, esp in CASOS)
 
@@ -694,13 +706,14 @@ def test_t6_sem_bert_identico_ao_comportamento_anterior():
 def test_t6_selo_de_pagina_sem_indice_nao_vota():
     """Selo ClaimReview extraído da PÁGINA (template/JSON-LD do portal) não entra em
     vereditos_aplicados: vai para vereditos_ignorados, não gera conflito e a postura segue
-    votando sozinha."""
+    votando sozinha. B4/R1 (13/10): a Lupa é agência de checagem curada, então a postura REFUTA dela
+    pesa como um selo (1,5), não 1,0."""
     it = _it("https://lupa.uol.com.br/x", "REFUTA", veredito="FALSO", origem="pagina")
     d = decidir(_ev([it]))
     assert not d.vereditos_aplicados and not d.conflitos
     assert [v["veredito"] for v in d.vereditos_ignorados] == ["FALSO"]
     assert "não vota" in d.vereditos_ignorados[0]["motivo"]
-    assert [v.motivo for v in d.votos] == ["postura REFUTA"] and d.log_odds == 1.0
+    assert [v.motivo for v in d.votos] == ["postura REFUTA (agência)"] and d.log_odds == 1.5
 
 
 def test_t6_selo_de_pagina_contra_postura_nao_gera_conflito():

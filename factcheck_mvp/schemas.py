@@ -38,6 +38,11 @@ class EntradaConsulta(BaseModel):
     # E4 (A5): entrada por link cuja página não tem data: E4 desligado de forma explícita,
     # sem cair no relógio de hoje. Exclusivo com `data_referencia`.
     sem_referencia_temporal: bool = False
+    # Só para avaliação (auditoria E, A1); ignorados fora de `config.EVAL_MODO`. `eval_excluir_urls`: URLs que o
+    # pipeline deve tratar como inexistentes (a checagem de onde o caso saiu); `eval_repeticao`: nº da repetição
+    # (>= 1 isola o cache do juiz; 0 = comportamento normal).
+    eval_excluir_urls: List[str] = Field(default_factory=list, max_length=20)
+    eval_repeticao: int = Field(default=0, ge=0, le=50)
 
     @field_validator("data_referencia")
     @classmethod
@@ -69,9 +74,17 @@ class Afirmacao(BaseModel):
     nucleo: str = ""
     polaridade: Polaridade = "afirma"
     consulta: str = ""  # 5-8 palavras-chave (PT) para a busca
+    # Missão F / item 7: marcadores relativos de tempo ("hoje", "acabou de sair") tirados do núcleo e da
+    # consulta; a regra de data E4 continua lendo-os (ver `texto_temporal`).
+    marcadores_tempo: List[str] = []
 
     def alvo(self) -> str:
         return (self.nucleo or self.texto).strip()
+
+    def texto_temporal(self) -> str:
+        """Texto que a regra de data E4 lê: a afirmação + os marcadores de tempo extraídos dela (o
+        núcleo e a consulta não os carregam mais). Sem marcadores extras, é o próprio `texto`."""
+        return " ".join([self.texto, *self.marcadores_tempo]).strip()
 
 
 class FonteEvidencia(BaseModel):

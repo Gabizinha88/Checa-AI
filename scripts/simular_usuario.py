@@ -12,6 +12,7 @@ Saída: reports/simulacao_AAAA-MM-DD_HHMM/{relatorio.html,dados.json}
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -57,6 +58,13 @@ def main(argv=None) -> int:
                     help="interrompe ao atingir N buscas na SerpAPI (casos restantes: não executados)")
     ap.add_argument("--confirmar", action="store_true", help="sem isto, só sorteia, estima e para")
     ap.add_argument("--frases", type=Path, default=sim.ARQ_FRASES)
+    ap.add_argument("--repeticoes", type=int, default=1,
+                    help="roda cada frase K vezes; da 2ª em diante o juiz não reaproveita o cassete (A1)")
+    ap.add_argument("--rep-inicial", type=int, default=0,
+                    help="número da primeira repetição (retoma uma rodada: --rep-inicial 1 --repeticoes 2 = reps 1 e 2)")
+    ap.add_argument("--excluir-fonte", action="store_true",
+                    help="deixa de fora do índice e da web a url_checagem do caso (a API precisa de EVAL_MODO=1)")
+    ap.add_argument("--rotulo", default="", help="nome da rodada (vai no meta e no nome da pasta)")
     ap.add_argument("--mostrar", action="store_true", help="lista as frases sorteadas por inteiro antes de rodar")
     ap.add_argument("--saida", type=Path, default=RAIZ / "reports")
     a = ap.parse_args(argv)
@@ -96,7 +104,8 @@ def main(argv=None) -> int:
     meta = {"inicio": sim.agora_iso(), "seed": a.seed, "n": a.n, "url": a.url, "commit": _commit(),
             "frases": str(a.frases.relative_to(RAIZ)) if a.frases.is_relative_to(RAIZ) else str(a.frases),
             "faltas": faltas, "estimativa_serpapi": est, "cota_serpapi_antes": cota,
-            "concorrencia": a.concorrencia, "max_buscas": a.max_buscas}
+            "concorrencia": a.concorrencia, "max_buscas": a.max_buscas, "repeticoes": max(1, a.repeticoes), "rep_inicial": a.rep_inicial,
+            "excluir_fonte": bool(a.excluir_fonte), "rotulo": a.rotulo}
 
     def enviar(payload):
         r = httpx.post(f"{a.url}/checar", json=payload, timeout=200)
@@ -111,30 +120,41 @@ def main(argv=None) -> int:
             return None
 
     trava, gastas = Lock(), [0]
-    regs = [None] * len(amostra)
+    K = max(1, a.repeticoes)
+    # repetição por fora: todas as frases na repetição 0, depois todas na 1… (a ordem de envio não vicia a repetição)
+    tarefas = [(i, r) for r in range(a.rep_inicial, a.rep_inicial + K) for i in range(len(amostra))]
+    regs = [None] * len(tarefas)
+    pasta = a.saida / f"simulacao_{inicio:%Y-%m-%d_%H%M}{('_' + a.rotulo) if a.rotulo else ''}"
+    pasta.mkdir(parents=True, exist_ok=True)
+    parcial = pasta / "parcial.jsonl"  # checkpoint: uma linha por execução concluída (sobrevive a uma queda)
 
-    def rodar(i):
+    def rodar(t):
+        j, (i, rep) = t
         frase = amostra[i]
         with trava:
             if a.max_buscas is not None and gastas[0] >= a.max_buscas:
-                regs[i] = {"frase": frase, "erro": None, "resultado": "nao_executado"}
-                print(f"[{i + 1:>2}/{len(amostra)}] ⏭️  não executado (teto de {a.max_buscas} buscas)")
+                regs[j] = {"frase": frase, "erro": None, "resultado": "nao_executado", "repeticao": rep}
+                print(f"[{j + 1:>3}/{len(tarefas)}] r{rep} não executado (teto de {a.max_buscas} buscas)")
                 return
-        reg = sim.executar_caso(frase, enviar, uso_serpapi=uso if a.concorrencia == 1 else None)
+        reg = sim.executar_caso(frase, enviar, uso_serpapi=uso if a.concorrencia == 1 else None,
+                                excluir_fonte=a.excluir_fonte, repeticao=rep)
         with trava:
             gastas[0] += reg.get("serpapi") or 0
-            regs[i] = reg
+            regs[j] = reg
+            resumo = {k: reg.get(k) for k in ("run_id", "repeticao", "nivel", "prob", "serpapi", "erro")}
+            with parcial.open("a", encoding="utf-8") as fp:
+                fp.write(json.dumps({"id": frase["id"], **resumo}, ensure_ascii=False) + "\n")
         res = sim.classificar(reg)
-        print(f"[{i + 1:>2}/{len(amostra)}] {sim._ROTULO_RESULTADO.get(res, res):26} "
+        print(f"[{j + 1:>3}/{len(tarefas)}] r{rep} {sim._ROTULO_RESULTADO.get(res, res):26} "
               f"{reg.get('nivel') or '-':13} {reg.get('tempo_s')}s serpapi={reg.get('serpapi')}\n"
               f"        {frase['texto']}")  # frase inteira, sem corte
 
     with ThreadPoolExecutor(max_workers=max(1, a.concorrencia)) as ex:
-        list(ex.map(rodar, range(len(amostra))))
+        list(ex.map(rodar, list(enumerate(tarefas))))
 
     meta["fim"], meta["cota_serpapi_depois"] = sim.agora_iso(), _cota_serpapi_conta()
     dados = sim.montar(regs, meta, sim.urls_da_base())
-    pasta = sim.gravar(dados, a.saida / f"simulacao_{inicio:%Y-%m-%d_%H%M}")
+    pasta = sim.gravar(dados, pasta)
     print("\n" + sim.resumo_terminal(dados, pasta))
     return 0
 

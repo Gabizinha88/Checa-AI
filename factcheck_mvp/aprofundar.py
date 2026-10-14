@@ -28,12 +28,12 @@ from typing import Dict, List, Optional
 from urllib.parse import urlparse
 
 from . import config, extracao, replay, telemetria
+from .trecho_juiz import montar_trecho  # Missão F / A4: uma só montagem do trecho do juiz
 
 log = logging.getLogger("factcheck.aprofundar")
 _cache: Dict[str, tuple] = {}  # url -> (expira, CorpoLido)
 
 MAX_BYTES_PADRAO = 5_000_000
-TRECHO_MAX_CHARS = 3000  # trecho p/ o juiz (review C3: trecho_corpo[:3000])
 # UA de navegador: UOL (Akamai) e TSE devolvem 403 para "factcheck-mvp/0.1" (review A4).
 HEADERS_NAVEGADOR = {
     "User-Agent": ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -67,12 +67,31 @@ class CorpoLido:
     veredito_pagina: Optional[dict] = None  # ClaimReview da própria página (jsonld.veredito_da_pagina)
 
 
+def _resolver(host: str):
+    """getaddrinfo com UMA nova tentativa (falha de DNS passageira é comum). None = não resolveu."""
+    for tentativa in (0, 1):
+        try:
+            return socket.getaddrinfo(host, None)
+        except Exception:
+            if tentativa == 0:
+                time.sleep(0.4)
+    return None
+
+
+def _dns_falhou(url: str) -> bool:
+    """A URL foi barrada porque o DNS não resolveu (e não por apontar para IP privado)?"""
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except Exception:
+        return False
+    return bool(host) and replay.modo_atual() != "replay" and _resolver(host) is None
+
+
 def _ip_privado(host: str) -> bool:
     if replay.modo_atual() == "replay":
         return False  # replay não resolve DNS: o cassete só existe se passou no SSRF ao gravar
-    try:
-        infos = socket.getaddrinfo(host, None)
-    except Exception:
+    infos = _resolver(host)
+    if infos is None:
         return True  # não resolveu: trata como inseguro
     for fam, _, _, _, sockaddr in infos:
         ip_txt = sockaddr[0]
@@ -121,70 +140,6 @@ def extrair_corpo(html: str) -> str:
     return (cabeca + corpo).strip()
 
 
-# ----------------------------------------------------------------------------- trecho p/ o juiz
-_STOP = {"que", "para", "com", "uma", "por", "dos", "das", "nos", "nas", "não", "nao", "mais",
-         "como", "sobre", "foi", "são", "sao", "ser", "está", "esta", "isso", "essa", "esse",
-         "pelo", "pela", "entre", "após", "apos", "também", "tambem", "quando", "onde", "seu", "sua"}
-# Conclusão/selo da checagem costuma estar no FIM da matéria: parágrafo com estes
-# marcadores ganha prioridade no trecho mesmo sem termo da afirmação.
-_MARCADOR_CONCLUSAO = re.compile(
-    r"conclus|classifica|verific|checag|#fake|#fato|é fake|é fato|falso|enganos|"
-    r"verdadeir|distorcid|sem evid|sem comprova|não é verdade|nao e verdade|boato|montagem|"
-    r"fora de contexto|descontextualizad|investigou e concluiu", re.I)
-
-
-def _termos(texto: str) -> set:
-    import unicodedata
-    t = unicodedata.normalize("NFKD", texto or "").encode("ascii", "ignore").decode().lower()
-    return {w for w in re.findall(r"[a-z0-9]{4,}", t) if w not in _STOP}
-
-
-def montar_trecho(texto: str, afirmacao: str = "", limite: int = 0) -> str:
-    """Trecho do corpo para o juiz: início + parágrafos com termos da afirmação
-    ou marcadores de conclusão, em ordem original, até `limite` chars.
-
-    Não corta cegamente em N chars: a conclusão da checagem costuma estar no fim.
-    """
-    limite = limite or TRECHO_MAX_CHARS
-    texto = (texto or "").strip()
-    if len(texto) <= limite:
-        return texto
-    paras = [p.strip() for p in re.split(r"\n+", texto) if p.strip()]
-    if len(paras) <= 1:  # sem parágrafos: início + fim
-        meio = limite // 2
-        return texto[:meio].rstrip() + " […] " + texto[-(limite - meio - 5):].lstrip()
-    alvo = _termos(afirmacao)
-    escolhidos: set = set()
-    usado = 0
-    # 1) início (lide): ~1/3 do orçamento
-    for i, p in enumerate(paras):
-        if usado >= limite // 3:
-            break
-        escolhidos.add(i)
-        usado += len(p) + 1
-    # 2) resto por relevância: termos da afirmação + marcador de conclusão (+ leve viés p/ o fim)
-    pont = []
-    for i, p in enumerate(paras):
-        if i in escolhidos:
-            continue
-        n_termos = len(alvo & _termos(p)) if alvo else 0
-        conclusao = 1 if _MARCADOR_CONCLUSAO.search(p) else 0
-        if n_termos or conclusao:
-            pont.append((n_termos * 2 + conclusao * 3 + i / len(paras), i))
-    for _, i in sorted(pont, reverse=True):
-        if usado + len(paras[i]) + 1 > limite:
-            continue
-        escolhidos.add(i)
-        usado += len(paras[i]) + 1
-    saida, anterior = [], -1
-    for i in sorted(escolhidos):
-        if anterior >= 0 and i != anterior + 1:
-            saida.append("[…]")
-        saida.append(paras[i])
-        anterior = i
-    return "\n".join(saida)[: limite + 20]
-
-
 def _seletor_corpo(catalogo, url: str) -> Optional[str]:
     try:
         if catalogo is None:
@@ -217,7 +172,7 @@ async def corpo_de_html(url: str, final_url: str, html: str, seletor: Optional[s
         if truncado:
             erro += " [html truncado no teto de bytes]"
     corpo = CorpoLido(url=url, final_url=final_url,
-                      trecho_corpo=montar_trecho(ex.texto, afirmacao) if lido else "",
+                      trecho_corpo=montar_trecho("", ex.texto, afirmacao) if lido else "",
                       corpo_lido=lido, erro=erro, texto_completo=ex.texto if lido else "",
                       metodo=ex.metodo, titulo=ex.titulo, data_pub=ex.data_pub,
                       data_pub_fonte=ex.data_pub_fonte, veredito_pagina=ex.veredito_pagina)
@@ -235,6 +190,9 @@ async def _baixar(url: str, catalogo, timeout_pag: float, max_bytes: int,
     # Sem allow-list de catálogo: o núcleo é busca aberta. Qualquer URL pública que
     # passe no anti-SSRF é lida; o peso de fonte não-curada é do agregador.
     if not _url_segura(url):
+        if _dns_falhou(url):  # não é SSRF: a rede falhou. Aparece como fallback e como erro próprio.
+            telemetria.fallback("dns", "não resolveu o domínio", url=url[:120])
+            return CorpoLido(url=url, erro="dns: não resolveu o domínio")
         return CorpoLido(url=url, erro="url insegura (SSRF)")
     try:
         atual = url
@@ -281,7 +239,7 @@ async def aprofundar(cands: List[dict], catalogo, por_afirm: int = 0,
             c = hit[1]
             if c.corpo_lido and c.texto_completo:  # trecho depende da afirmação de quem pede
                 c = replace(c, trecho_corpo=montar_trecho(
-                    c.texto_completo, d.get("_afirmacao") or d.get("titulo") or ""))
+                    "", c.texto_completo, d.get("_afirmacao") or d.get("titulo") or ""))
             saida[url] = c
         elif url:
             pend.append(d)
@@ -289,13 +247,20 @@ async def aprofundar(cands: List[dict], catalogo, por_afirm: int = 0,
         return saida
 
     async def _um(d):
-        try:
-            return d["url"], await asyncio.wait_for(
-                _baixar(d["url"], catalogo, timeout_pag, max_bytes,
-                        d.get("_afirmacao") or d.get("titulo") or ""),
-                timeout=timeout_pag + 10)  # +10s: extração de HTML grande roda em thread
-        except Exception as e:
-            return d["url"], CorpoLido(url=d["url"], erro=str(e)[:120])
+        # `_timeout` (s) e `_reler` (1 nova tentativa) vêm do chamador: checagem que já está na base
+        # curada é a fonte mais valiosa, então não se desiste dela na 1ª falha de rede.
+        tpag = float(d.get("_timeout") or timeout_pag)
+        tentativas = 2 if d.get("_reler") else 1
+        for t in range(tentativas):
+            try:
+                c = await asyncio.wait_for(
+                    _baixar(d["url"], catalogo, tpag, max_bytes, d.get("_afirmacao") or d.get("titulo") or ""),
+                    timeout=tpag + 10)  # +10s: extração de HTML grande roda em thread
+            except Exception as e:
+                c = CorpoLido(url=d["url"], erro=str(e)[:120])
+            if c.corpo_lido or t == tentativas - 1:
+                return d["url"], c
+            await asyncio.sleep(0.5)
 
     try:
         # asyncio.wait NÃO cancela: downloads concluídos no budget sobrevivem

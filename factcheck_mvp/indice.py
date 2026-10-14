@@ -25,6 +25,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Union
 
+from . import telemetria
+
 log = logging.getLogger("factcheck.indice")
 
 try:
@@ -181,6 +183,21 @@ def tokenizar_pt(texto: str, radical: bool = True) -> List[str]:
     return saida
 
 
+_PREFIXO_TRECHO = re.compile(r"^(?:Boato|Hoax)\s*[–—-]\s*")
+_FIM_PRIMEIRA_FRASE = re.compile(r"^(.+?[.!?])(?=\s+[A-ZÁÉÍÓÚÂÊÔÃÕÇ“\"]|\s*$)", re.S)
+_TAM_PRIMEIRA_FRASE = 250  # sem fim de frase reconhecível: começo do trecho
+
+
+def primeira_frase_trecho(trecho: str) -> str:
+    """Primeira frase do `trecho` de um registro, sem o prefixo "Boato –"/"Hoax –" do Boatos.org.
+
+    Corta no 1º ponto/interrogação/exclamação seguido de espaço+maiúscula (ou no fim do texto).
+    Se não há fim de frase, devolve os primeiros 250 caracteres."""
+    t = _PREFIXO_TRECHO.sub("", (trecho or "").strip())
+    m = _FIM_PRIMEIRA_FRASE.match(t)
+    return (m.group(1) if m else t[:_TAM_PRIMEIRA_FRASE]).strip()
+
+
 # ============================================================================ limiar
 # Limiar RELATIVO (o absoluto não serve: BM25 fora do tema no corpus real marca
 # 8–22). Um registro volta só se passar TODOS:
@@ -208,12 +225,26 @@ def tokenizar_pt(texto: str, radical: bool = True) -> List[str]:
 # "números batem": se a consulta tem números, ≥1 deles precisa estar na afirmação/título
 # ("Janja gastou R$ 7 bilhões" não casa com "R$ 62 milhões"; "salário de 3 mil" não casa
 # com "acabar com o salário mínimo"). Resultado: FP 7,9%, r@1 0,77 e r@3 0,86 iguais.
+#
+# 13/10/2026 — 1ª frase do trecho (P1) e anos fora da exigência de números (P4). A frase do
+# usuário costuma ser a DESCRIÇÃO do boato, que está no trecho ("Boato – …"); o título é uma
+# manchete reescrita e a cobertura só em afirmação+título cortava a checagem certa. Agora um
+# registro também entra se a consulta cobre >= cobertura_min_trecho (0,8) de afirmação+título+1ª
+# frase do trecho; min_termos e números valem sobre o caminho que passou. Anos (1900–2100) não
+# contam como quantidade na consulta. Medido (k=5), antes → depois:
+#   bench_indice_checagens: r@1 0,7727 → 0,7727 · r@3 0,8636 → 0,8636 · FP 6/76 → 6/76 (mesmos casos)
+#   bench_recall_frases: checadas_falsas 81/140 → 138/140 · verdadeiras 8/11 → 9/11 ·
+#     antigas 5/5 → 5/5 · fora_da_base com retorno 1/46 → 1/46 (mesmo caso)
+# Ressalva: 100 das 140 consultas de checadas_falsas SÃO a 1ª frase do trecho do próprio alvo
+# (a simulação gerou assim). Nelas o ganho é 43 → 100; nas 40 independentes não há ganho (38 → 38).
+# O ganho com paráfrases de descrições ainda não está medido.
 _LIMIAR = {
     "piso_abs": 4.0,
     "fator_mediana": 2.0,
     "fracao_top1": 0.5,
     "min_termos": 3,
     "cobertura_min": 0.6,
+    "cobertura_min_trecho": 0.8,
     "exigir_numeros": True,
 }
 # Só números soltos ("7 bilhões", "15%", "R$ 3 mil"); colados a letras/hífen não contam
@@ -222,6 +253,26 @@ _RE_NUMERO = re.compile(r"(?<![\w-])\d+(?![^\W\d_])")
 _BOOST_AFIRMACAO = 3  # repetição de tokens = boost de campo "pobre" (sem BM25F)
 _BOOST_TITULO = 2
 _MAX_TOKENS_TRECHO = 80
+_MAX_EVENTOS_DESCARTE = 3  # `indice_descarte` por chamada de buscar_checagens (trace não cresce sem limite)
+
+
+def _e_ano(numero: str) -> bool:
+    """Inteiro entre 1900 e 2100: ano, não quantidade (não entra na exigência de números)."""
+    return numero.isdigit() and 1900 <= int(numero) <= 2100
+
+
+def _caminho(q, peso_q, soma_q, campos, nums_q, nums_reg, min_termos, cobertura_min):
+    """Avalia UM caminho de um registro -> (passou, motivo se não passou, cobertura, termos casados).
+    Mesmas travas de sempre, na mesma ordem: termos distintos, cobertura ponderada por IDF, números."""
+    casados = [t for t in q if t in campos]
+    cobertura = sum(peso_q[t] for t in casados) / soma_q
+    if len(casados) < min_termos:
+        return False, "min_termos", cobertura, casados
+    if cobertura < cobertura_min:
+        return False, "cobertura", cobertura, casados
+    if nums_q and not (nums_q & nums_reg):
+        return False, "numeros", cobertura, casados
+    return True, None, cobertura, casados
 
 
 def checagem_como_doc(reg: Dict[str, Any]) -> Dict[str, Any]:
@@ -252,6 +303,9 @@ class Indice:
         self._checagens_carregadas = False  # False -> buscar_checagens carrega o padrão sob demanda
         self._bm25_chk = None
         self._campos_chk: List[set] = []   # tokens de afirmacao+titulo (p/ sobreposição)
+        self._campos_ext: List[set] = []   # os mesmos + tokens da 1ª frase do trecho (caminho "ext")
+        self._nums_chk: List[set] = []     # números de afirmacao+titulo
+        self._nums_frase: List[set] = []   # números da 1ª frase do trecho
         self._todos_chk: List[set] = []    # tokens de todos os campos (p/ cobertura)
 
     # ------------------------------------------------------------------ legado
@@ -338,14 +392,21 @@ class Indice:
         if self._bm25_chk is not None or not self.checagens or not BM25_OK:
             return
         matriz = []
-        self._campos_chk, self._todos_chk = [], []
+        self._campos_chk, self._campos_ext, self._todos_chk = [], [], []
+        self._nums_chk, self._nums_frase = [], []
         for r in self.checagens:
             af = tokenizar_pt(r.get("afirmacao_checada") or "")
             extras = " ".join(r.get("afirmacoes_extras") or [])
             tit = tokenizar_pt(r.get("titulo") or "")
             tre = tokenizar_pt(f"{extras} {r.get('trecho') or ''}")[:_MAX_TOKENS_TRECHO]
             matriz.append(af * _BOOST_AFIRMACAO + tit * _BOOST_TITULO + tre)
-            self._campos_chk.append(set(af) | set(tit) | set(tokenizar_pt(extras)))
+            chk = set(af) | set(tit) | set(tokenizar_pt(extras))
+            frase = primeira_frase_trecho(r.get("trecho") or "")
+            self._campos_chk.append(chk)
+            self._campos_ext.append(chk | set(tokenizar_pt(frase)))
+            self._nums_chk.append(set(_RE_NUMERO.findall(f"{r.get('afirmacao_checada') or ''} "
+                                                         f"{r.get('titulo') or ''}")))
+            self._nums_frase.append(set(_RE_NUMERO.findall(frase)))
             self._todos_chk.append(set(af) | set(tit) | set(tre))
         # Okapi (não Plus): o Plus soma delta·idf a TODO doc e desmonta o limiar relativo.
         self._bm25_chk = BM25Okapi(matriz)
@@ -357,7 +418,12 @@ class Indice:
         Retorna até k registros (campos do checagens.jsonl + `score` BM25 bruto +
         `score_rel` = cobertura da consulta ponderada por IDF, em [0, 1] +
         `termos_casados`). Lista vazia = nenhuma checagem confiável (inclusive com
-        o atalho desligado por INDICE_CHECAGENS=0)."""
+        o atalho desligado por INDICE_CHECAGENS=0).
+
+        Um registro entra por um de dois caminhos, cada um com as travas de sempre
+        (termos distintos, cobertura, números): afirmação+título com `cobertura_min`, ou
+        afirmação+título+1ª frase do trecho com `cobertura_min_trecho`. `score_rel` é a
+        cobertura do caminho que passou (a maior, se passaram os dois)."""
         if not habilitado():
             return []
         self._garantir_checagens()
@@ -367,7 +433,8 @@ class Indice:
         q = list(dict.fromkeys(tokenizar_pt(afirmacao)))
         if not q:
             return []
-        nums_q = set(_RE_NUMERO.findall(afirmacao or "")) if lim.get("exigir_numeros") else set()
+        nums_q = ({n for n in _RE_NUMERO.findall(afirmacao or "") if not _e_ano(n)}
+                  if lim.get("exigir_numeros") else set())
         scores = self._bm25_chk.get_scores(q)
         positivos = sorted((s for s in scores if s > 0), reverse=True)
         if not positivos:
@@ -380,22 +447,30 @@ class Indice:
         idf = self._bm25_chk.idf
         peso_q = {t: max(idf.get(t, 0.0), 0.0) for t in q}
         soma_q = sum(peso_q.values()) or 1.0
+        min_termos = min(lim["min_termos"], len(q))
         saida = []
+        descartes = 0  # eventos `indice_descarte` emitidos nesta chamada (máx. _MAX_EVENTOS_DESCARTE)
         for i in sorted(range(len(scores)), key=lambda j: scores[j], reverse=True):
             s = float(scores[i])
             if s < corte:
                 break
-            casados = [t for t in q if t in self._campos_chk[i]]
-            if len(casados) < min(lim["min_termos"], len(q)):
+            nums_campos = self._nums_chk[i]
+            ok_chk, _, cob_chk, cas_chk = _caminho(q, peso_q, soma_q, self._campos_chk[i], nums_q,
+                                                   nums_campos, min_termos, lim["cobertura_min"])
+            ok_ext, mot_ext, cob_ext, cas_ext = _caminho(q, peso_q, soma_q, self._campos_ext[i], nums_q,
+                                                         nums_campos | self._nums_frase[i], min_termos,
+                                                         lim["cobertura_min_trecho"])
+            if ok_ext:  # cobertura_ext >= cobertura_chk: é a maior das que passaram
+                cobertura, casados = cob_ext, cas_ext
+            elif ok_chk:
+                cobertura, casados = cob_chk, cas_chk
+            else:
+                # motivo = o que barrou o caminho mais permissivo (com a 1ª frase do trecho)
+                if descartes < _MAX_EVENTOS_DESCARTE:
+                    descartes += 1
+                    telemetria.evento("indice_descarte", url=self.checagens[i].get("url"), score=round(s, 4),
+                                      cobertura=round(cob_ext, 4), motivo=mot_ext)
                 continue
-            cobertura = sum(peso_q[t] for t in q if t in self._campos_chk[i]) / soma_q
-            if cobertura < lim["cobertura_min"]:
-                continue
-            if nums_q:
-                reg = self.checagens[i]
-                if not nums_q & set(_RE_NUMERO.findall(f"{reg.get('afirmacao_checada') or ''} "
-                                                       f"{reg.get('titulo') or ''}")):
-                    continue
             saida.append({**self.checagens[i], "score": round(s, 4), "score_rel": round(cobertura, 4),
                           "termos_casados": casados})
             if len(saida) >= k:
