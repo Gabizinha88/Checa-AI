@@ -93,6 +93,22 @@ def _env(tipo: str, corpo: Dict[str, Any], ts: Optional[str], chave: str) -> Dic
             "body": {k: v for k, v in corpo.items() if v is not None}}
 
 
+def uso_do_llm(d: Dict[str, Any]) -> Dict[str, Any]:
+    """`usage` do evento `llm` -> campos da generation (Missão F / 8): `usageDetails` {input, output, total}
+    e, com custo conhecido, `costDetails` {total}. O raciocínio já está dentro de output (vai em metadata,
+    para o Langfuse não contar duas vezes). Chamada de cassete (`cache=hit`) não gastou nada agora: leva os
+    tokens, mas não o custo. Sem `usage` no evento: {}."""
+    u = d.get("usage")
+    if not isinstance(u, dict):
+        return {}
+    det = {k: u[campo] for k, campo in (("input", "prompt_tokens"), ("output", "completion_tokens"),
+                                        ("total", "total_tokens")) if isinstance(u.get(campo), (int, float))}
+    out: Dict[str, Any] = {"usageDetails": det} if det else {}
+    if isinstance(u.get("custo"), (int, float)) and d.get("cache") != "hit":
+        out["costDetails"] = {"total": u["custo"]}
+    return out
+
+
 def eventos_do_run(pasta: Path, tags: Iterable[str] = (), metadados: Optional[Dict[str, Any]] = None
                    ) -> List[Dict[str, Any]]:
     """Converte um run local em eventos da API de ingestão do Langfuse."""
@@ -137,8 +153,11 @@ def eventos_do_run(pasta: Path, tags: Iterable[str] = (), metadados: Optional[Di
                 "input": d.get("prompt") or {"prompt_sha": d.get("prompt_sha"), "n_chars": d.get("n_chars_prompt")},
                 "output": d.get("saida"), "level": "ERROR" if d.get("erro") else "DEFAULT",
                 "statusMessage": d.get("erro"),
+                **uso_do_llm(d),
                 "metadata": {"motor": d.get("motor"), "cache": d.get("cache"), "status": d.get("status"),
-                             "prompt_sha": d.get("prompt_sha")}}, ts, chave))
+                             "prompt_sha": d.get("prompt_sha"), "finish_reason": d.get("finish_reason"),
+                             "reasoning_tokens": (d.get("usage") or {}).get("reasoning_tokens"),
+                             "cached_tokens": (d.get("usage") or {}).get("cached_tokens")}}, ts, chave))
         elif tipo in ("fonte", "fallback", "decisao", "sinal", "evidencias", "indice_descarte"):
             nome = tipo
             if tipo == "fonte":
