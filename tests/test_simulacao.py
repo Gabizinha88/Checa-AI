@@ -138,3 +138,14 @@ def test_moldura_determinista_sem_palavras_de_tempo():
         assert not any(p in m.lower() for p in ("hoje", "agora", "ontem"))
     msg, i = g.emoldurar("É verdade que o Pix vai ser taxado?", "k2")
     assert i in g.MOLDURAS_PERGUNTA and msg.count("?") == 1  # pergunta não ganha pergunta extra
+
+
+def test_payload_do_caso_leva_os_campos_de_avaliacao():
+    f = {"id": "x:1", "texto": "Café cura câncer", "url_checagem": "https://lupa.uol.com.br/a"}
+    assert sim.payload_do_caso(f) == {"tipo": "titulo", "conteudo": "Café cura câncer"}
+    p = sim.payload_do_caso(f, excluir_fonte=True, repeticao=2)
+    assert p["eval_excluir_urls"] == ["https://lupa.uol.com.br/a"] and p["eval_repeticao"] == 2
+    assert "eval_excluir_urls" not in sim.payload_do_caso({**f, "url_checagem": None}, excluir_fonte=True)
+    reg = sim.executar_caso(f, lambda payload: (_ for _ in ()).throw(RuntimeError("sem rede")),
+                            excluir_fonte=True, repeticao=1)
+    assert reg["repeticao"] == 1 and reg["fonte_excluida"] and reg["erro"]

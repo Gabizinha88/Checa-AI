@@ -118,26 +118,37 @@ def main(argv=None) -> int:
             return None
 
     trava, gastas = Lock(), [0]
-    regs = [None] * len(amostra)
+    K = max(1, a.repeticoes)
+    # repetição por fora: todas as frases na repetição 0, depois todas na 1… (a ordem de envio não vicia a repetição)
+    tarefas = [(i, r) for r in range(K) for i in range(len(amostra))]
+    regs = [None] * len(tarefas)
+    pasta = a.saida / f"simulacao_{inicio:%Y-%m-%d_%H%M}{('_' + a.rotulo) if a.rotulo else ''}"
+    pasta.mkdir(parents=True, exist_ok=True)
+    parcial = pasta / "parcial.jsonl"  # checkpoint: uma linha por execução concluída (sobrevive a uma queda)
 
-    def rodar(i):
+    def rodar(t):
+        j, (i, rep) = t
         frase = amostra[i]
         with trava:
             if a.max_buscas is not None and gastas[0] >= a.max_buscas:
-                regs[i] = {"frase": frase, "erro": None, "resultado": "nao_executado"}
-                print(f"[{i + 1:>2}/{len(amostra)}] ⏭️  não executado (teto de {a.max_buscas} buscas)")
+                regs[j] = {"frase": frase, "erro": None, "resultado": "nao_executado", "repeticao": rep}
+                print(f"[{j + 1:>3}/{len(tarefas)}] r{rep} não executado (teto de {a.max_buscas} buscas)")
                 return
-        reg = sim.executar_caso(frase, enviar, uso_serpapi=uso if a.concorrencia == 1 else None)
+        reg = sim.executar_caso(frase, enviar, uso_serpapi=uso if a.concorrencia == 1 else None,
+                                excluir_fonte=a.excluir_fonte, repeticao=rep)
         with trava:
             gastas[0] += reg.get("serpapi") or 0
-            regs[i] = reg
+            regs[j] = reg
+            resumo = {k: reg.get(k) for k in ("run_id", "repeticao", "nivel", "prob", "serpapi", "erro")}
+            with parcial.open("a", encoding="utf-8") as fp:
+                fp.write(json.dumps({"id": frase["id"], **resumo}, ensure_ascii=False) + "\n")
         res = sim.classificar(reg)
-        print(f"[{i + 1:>2}/{len(amostra)}] {sim._ROTULO_RESULTADO.get(res, res):26} "
+        print(f"[{j + 1:>3}/{len(tarefas)}] r{rep} {sim._ROTULO_RESULTADO.get(res, res):26} "
               f"{reg.get('nivel') or '-':13} {reg.get('tempo_s')}s serpapi={reg.get('serpapi')}\n"
               f"        {frase['texto']}")  # frase inteira, sem corte
 
     with ThreadPoolExecutor(max_workers=max(1, a.concorrencia)) as ex:
-        list(ex.map(rodar, range(len(amostra))))
+        list(ex.map(rodar, list(enumerate(tarefas))))
 
     meta["fim"], meta["cota_serpapi_depois"] = sim.agora_iso(), _cota_serpapi_conta()
     dados = sim.montar(regs, meta, sim.urls_da_base())
