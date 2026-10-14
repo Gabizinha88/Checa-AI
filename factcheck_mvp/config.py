@@ -176,3 +176,16 @@ READERLM_BASE_URL = _get("READERLM_BASE_URL", "http://127.0.0.1:8889/v1")
 # `eval_excluir_urls` (fonte deixada de fora) e `eval_repeticao` (juiz sem cache) da EntradaConsulta; sem
 # ele esses campos são ignorados (com `fallback onde=eval`). Nunca ligar em produção.
 EVAL_MODO = _bool("EVAL_MODO", False)
+
+# Missão F / A5: planejador de busca (factcheck_mvp/planejador_busca.py). Padrão desligado: com 0 a busca é a de
+# antes (mesmas consultas, mesmo motor, mesmo número de ondas). Ligado: relaxa consulta vazia, manda `site:` ao
+# Google orgânico, lê mais resultados quando os primeiros são fora do tema e usa o orçamento que sobra.
+BUSCA_PLANEJADOR = _bool("BUSCA_PLANEJADOR", False)
+# Rodadas de relaxamento por onda (cada rodada = 1 busca por consulta vazia, dentro do orçamento do caso).
+BUSCA_RELAXAR_RODADAS = _int("BUSCA_RELAXAR_RODADAS", 2)
+# Teto de resultados lidos por busca ao "ler mais" (a leitura normal é ORGANICOS_POR_BUSCA = 8).
+BUSCA_LER_MAX = _int("BUSCA_LER_MAX", 16)
+# Fração mínima de páginas NAO_TRATA (sem nenhuma postura) para considerar os primeiros resultados fora do tema.
+BUSCA_FORA_TEMA_FRACAO = _float("BUSCA_FORA_TEMA_FRACAO", 0.5)
+# Ondas extras por afirmação com o planejador (o padrão sem ele é AGENTE_MAX_ONDAS_EXTRAS = 1).
+BUSCA_EXTRAS_MAX = _int("BUSCA_EXTRAS_MAX", 3)

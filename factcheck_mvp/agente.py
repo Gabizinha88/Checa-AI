@@ -29,6 +29,10 @@ preservado), resultado parcial preservado em timeout. O crítico conta AVALIAÇ�
 orçamento de avaliações (`max_por_afirmacao` por afirmação) já foi atingido, mesmo
 com buscas restantes — o N×1 multiplica o custo por busca.
 
+Planejador de busca (Missão F / A5, `BUSCA_PLANEJADOR=1`; regras em `planejador_busca.py`): consulta vazia é
+relaxada antes de desistir, `site:` vai ao Google orgânico, o crítico lê mais resultados já obtidos quando os
+primeiros são fora do tema e há mais ondas extras (`BUSCA_EXTRAS_MAX`). Desligado, nada disto roda.
+
 Telemetria: evento `etapa` (nome `agente-onda`) por busca de cada onda — afirmação, query,
 n resultados, n novos — e evento `agente` por decisão do crítico (parar|nova_onda, motivo,
 contagens usadas). Todo I/O passa por `serpapi_layer.SerpAPIClient` (replay) e `llm`.
@@ -45,6 +49,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from pydantic import BaseModel
 
 from . import config, corroboracao, eval_modo, llm, selos, telemetria
+from . import planejador_busca as planejador  # Missão F / A5
 from . import serpapi_layer as camada
 
 log = logging.getLogger("factcheck.agente")
@@ -79,6 +84,13 @@ def com_motor(q: Dict[str, Any]) -> Dict[str, Any]:
     novo = {k: v for k, v in q.items() if k != "num"}
     novo["engine"] = "google_news"
     return novo
+
+
+def motor_da_consulta(q: Dict[str, Any]) -> Dict[str, Any]:
+    """Motor de UMA consulta: com o planejador (A5) ligado, `site:` vai ao Google orgânico e a consulta pura
+    segue o motor configurado; desligado, é sempre `com_motor` (comportamento de antes)."""
+    novo = planejador.motor_por_dominio(q, motor_busca())
+    return novo if novo is not None else com_motor(q)
 
 
 def _itens_news(payload: Optional[Dict[str, Any]], chave: str) -> List[Dict[str, Any]]:
@@ -136,6 +148,8 @@ class EstadoBusca:
     decisoes: List[str] = field(default_factory=list)
     criticas: List[Dict[str, Any]] = field(default_factory=list)
     excluir: frozenset = frozenset()   # só avaliação (A1): URLs normalizadas que não existem para este caso
+    planejador: bool = False           # Missão F / A5: BUSCA_PLANEJADOR no momento da criação
+    consultas: Dict[str, Dict[str, Any]] = field(default_factory=dict)  # A5: texto -> params (motor) da busca
 
     @classmethod
     def novo(cls, teto: Optional[int] = None, max_extras: Optional[int] = None,
@@ -145,10 +159,34 @@ class EstadoBusca:
                                   else getattr(config, "AGENTE_MAX_ONDAS_EXTRAS", 1)),
                    max_por_afirmacao=int(getattr(config, "AGENTE_MAX_POR_AFIRMACAO", 12) or 12),
                    timeout_s=float(timeout_s if timeout_s is not None
-                                   else getattr(config, "AGENTE_TIMEOUT_S", 60) or 60))
+                                   else getattr(config, "AGENTE_TIMEOUT_S", 60) or 60),
+                   planejador=planejador.ativo())
 
     def restante(self) -> int:
         return max(0, self.teto - self.buscas)
+
+    def limite_extras(self) -> int:
+        """Ondas extras por afirmação (A5: mais que o padrão quando o planejador usa o orçamento que sobra).
+        A reserva da onda 1 (`onda1`) continua sendo `max_extras`, para a onda 1 não ser espremida."""
+        return planejador.limite_extras(self.max_extras) if self.planejador else self.max_extras
+
+    def n_passes(self) -> int:
+        """Passes do laço pós-juiz: um por onda extra, um final só de registro e (A5) um para o `ler_mais`,
+        que não conta como onda extra."""
+        return max(0, self.limite_extras()) + 1 + (1 if self.planejador else 0)
+
+    def ler_mais(self, ai: int, onda: int, teto: int) -> int:
+        """A5: absorve, dos payloads JÁ obtidos para a afirmação, os resultados entre `ORGANICOS_POR_BUSCA` e
+        `teto` (sem gastar busca). -> n documentos novos para `ai`."""
+        novos = 0
+        for texto in list(self.queries.get(ai, [])):
+            res, q = self.resultados_q.get(texto), self.consultas.get(texto)
+            if res is None or not res.payload or q is None:
+                continue
+            novos += self.absorver(ai, onda, q, res.payload, inicio=ORGANICOS_POR_BUSCA, fim=teto)[1]
+        if novos:
+            self.avaliacoes = len(self.pecas())
+        return novos
 
     def reservar(self, limite: Optional[int] = None) -> bool:
         """Consome 1 busca do teto da requisição (e do `limite` da onda, se houver)."""
@@ -160,13 +198,16 @@ class EstadoBusca:
         return True
 
     def absorver(self, ai: int, onda: int, q: Dict[str, Any],
-                 payload: Optional[Dict[str, Any]]) -> Tuple[int, int]:
-        """Normaliza os resultados de 1 busca para a afirmação `ai`. -> (n resultados, n novos p/ `ai`)."""
+                 payload: Optional[Dict[str, Any]], inicio: int = 0,
+                 fim: Optional[int] = None) -> Tuple[int, int]:
+        """Normaliza os resultados de 1 busca para a afirmação `ai`. -> (n resultados, n novos p/ `ai`).
+        `inicio`/`fim` (A5, "ler mais"): faixa dos resultados; o padrão é a de sempre, os `ORGANICOS_POR_BUSCA`
+        primeiros (e os top_stories só quando `inicio == 0`)."""
         engine = str(q.get("engine") or "google")
         chave = camada.RESULT_KEY.get(engine, "organic_results")
         brutos = _itens_news(payload, chave) if engine == "google_news" else ((payload or {}).get(chave) or [])
-        itens = [(it, False) for it in brutos[:ORGANICOS_POR_BUSCA]]
-        if engine == "google":
+        itens = [(it, False) for it in brutos[inicio:(ORGANICOS_POR_BUSCA if fim is None else fim)]]
+        if engine == "google" and inicio == 0:
             itens += [(it, True) for it in ((payload or {}).get("top_stories") or [])[:TOP_STORIES_POR_BUSCA]]
         n, novos = 0, 0
         lista = self.ordem.setdefault(ai, [])
@@ -230,7 +271,7 @@ class EstadoBusca:
                 "por_afirmacao": {ai: len(v) for ai, v in sorted(self.ordem.items())},
                 "queries": {ai: list(v) for ai, v in sorted(self.queries.items())},
                 "extras": dict(self.extras), "decisoes": list(self.decisoes),
-                "criticas": list(self.criticas)}
+                "criticas": list(self.criticas), "planejador": self.planejador}
 
     def resumo(self) -> str:
         return (f"{self.buscas}/{self.teto} busca(s) em {self.ondas} onda(s), {len(self.docs)} URL(s) única(s), "
@@ -256,10 +297,23 @@ def _buscar(cliente: Any, q: Dict[str, Any]) -> "camada.ResultadoBusca":
 async def _executar_onda(estado: EstadoBusca, cliente: Any,
                          plano: List[Tuple[Dict[str, Any], List[int], str]], onda: int,
                          limite: Optional[int] = None) -> int:
+    """Executa um plano e, com o planejador (A5) ligado, relaxa as consultas que voltaram vazias
+    (`_relaxar_vazias`) antes de desistir. Desligado, é só `_executar_plano`. -> n buscas lançadas."""
+    n, vazias = await _executar_plano(estado, cliente, plano, onda, limite)
+    if estado.planejador and vazias:
+        n += await _relaxar_vazias(estado, cliente, vazias, onda, limite)
+    return n
+
+
+async def _executar_plano(estado: EstadoBusca, cliente: Any,
+                          plano: List[Tuple[Dict[str, Any], List[int], str]], onda: int,
+                          limite: Optional[int] = None
+                          ) -> Tuple[int, List[Tuple[str, List[int], str]]]:
     """Executa um plano [(query, [afirmações], motivo)] na ordem dada (a ordem define quem
     recebe orçamento). Buscas em paralelo; timeout/cap preserva o que já voltou
     (buscas E avaliações pendentes: o corte p/ o avaliador 1:1 é recalculado ao
-    final). -> n buscas lançadas."""
+    final). -> (n buscas lançadas, [(consulta, afirmações, motivo)] das que não trouxeram resultado)."""
+    vazias: List[Tuple[str, List[int], str]] = []
     lancados: List[Tuple[Dict[str, Any], List[int], str, Optional[asyncio.Task]]] = []
     for q, ais, motivo in plano:
         if q["q"] in estado.resultados_q or any(q["q"] == l[0]["q"] for l in lancados):
@@ -295,13 +349,22 @@ async def _executar_onda(estado: EstadoBusca, cliente: Any,
             else:
                 res = camada.ResultadoBusca(None, "timeout")
             estado.resultados_q[q["q"]] = res
+            estado.consultas[q["q"]] = q  # A5: o "ler mais" precisa do motor da busca
             if res.cache:
                 estado.buscas_cache += 1
             if res.motivo == "cap" and estado.parar_motivo != "cap":
                 estado.parar_motivo = "cap"
                 estado.decisoes.append("teto diário SerpAPI: ondas restantes canceladas")
+            if (estado.planejador and res.motivo == "erro" and not estado.parar_motivo
+                    and planejador.orcamento_esgotado()):  # A5: não insistir depois do teto global
+                estado.parar_motivo = "orcamento"
+                estado.decisoes.append("teto de buscas SerpAPI do processo/arquivo: ondas restantes canceladas")
+                planejador.evento("parou_orcamento", onda=onda, consulta=q["q"])
+        sem_resultado: List[int] = []
         for ai in ais:
             n, novos = estado.absorver(ai, onda, q, res.payload)
+            if not n and res.motivo in ("vazio", "ok", "reuso"):  # A5: voltou vazia (erro/cap/timeout não relaxam)
+                sem_resultado.append(ai)
             qs = estado.queries.setdefault(ai, [])
             if q["q"] not in qs:
                 qs.append(q["q"])
@@ -311,12 +374,53 @@ async def _executar_onda(estado: EstadoBusca, cliente: Any,
                               serpapi=res.motivo, cache=bool(res.cache), reuso=reuso,
                               detalhe=f"onda {onda} af{ai} ({motivo}): {novos} nova(s) de {n} resultado(s) "
                                       f"[{res.motivo}{', reuso' if reuso else ''}]")
+        if sem_resultado:
+            vazias.append((q["q"], sem_resultado, motivo))
     estado.ondas = max(estado.ondas, onda)
     try:  # peças no corte p/ o avaliador 1:1 (o crítico usa além das buscas)
         estado.avaliacoes = len(estado.pecas())
     except Exception:
         pass
-    return len(tarefas)
+    return len(tarefas), vazias
+
+
+async def _relaxar_vazias(estado: EstadoBusca, cliente: Any, vazias: List[Tuple[str, List[int], str]],
+                          onda: int, limite: Optional[int]) -> int:
+    """A5: cada consulta que voltou vazia ganha até `BUSCA_RELAXAR_RODADAS` buscas mais frouxas (sem `site:`,
+    sem palavras-ruído, menos termos), dentro do teto da requisição e do `limite` da onda. A consulta
+    relaxada não repete uma que a afirmação já fez; uma já feita por outra afirmação é reusada de graça.
+    O motor segue `motor_da_consulta` (sem `site:` = motor configurado). -> n buscas lançadas."""
+    lancadas = 0
+    for rodada in range(1, planejador.max_rodadas_relaxar() + 1):
+        if (estado.parar_motivo or estado.buscas >= estado.teto
+                or (limite is not None and estado.buscas >= limite)):
+            planejador.evento("parou_orcamento", onda=onda, nivel=rodada,
+                              motivo=estado.parar_motivo or "teto da onda/requisição",
+                              consultas=[v[0] for v in vazias])
+            break
+        plano: List[Tuple[Dict[str, Any], List[int], str]] = []
+        proximas: List[Tuple[str, List[int], str]] = []
+        for original, ais, motivo in vazias:
+            feitas = {q for ai in ais for q in estado.queries.get(ai, [])}
+            nova = planejador.proxima_relaxada(original, feitas)
+            if nova is None:
+                continue
+            q2 = motor_da_consulta(camada._base(nova, "google"))
+            plano.append((q2, ais, f"relaxada ({motivo}, nível {rodada})"))
+            proximas.append((original, ais, motivo))
+            planejador.evento("relaxou", onda=onda, afirmacoes=ais, de=original, para=q2["q"], nivel=rodada,
+                              motor=q2.get("engine"), buscas_restantes=estado.restante())
+        if not plano:
+            break
+        n, vazias_novas = await _executar_plano(estado, cliente, _agrupar_iguais(plano), onda, limite)
+        lancadas += n
+        # a cadeia continua a partir da CONSULTA ORIGINAL (a relaxada que voltou vazia já está em `queries`)
+        ainda = {ai for _, ais_v, _ in vazias_novas for ai in ais_v}
+        vazias = [(original, [ai for ai in ais if ai in ainda], motivo) for original, ais, motivo in proximas]
+        vazias = [v for v in vazias if v[1]]
+        if not vazias:
+            break
+    return lancadas
 
 
 def plano_onda1(alvos: Sequence[Alvo], agencias: Optional[List[Dict[str, Any]]] = None
@@ -328,7 +432,7 @@ def plano_onda1(alvos: Sequence[Alvo], agencias: Optional[List[Dict[str, Any]]] 
         a.append((com_motor(camada._base(al.consulta, "google")), [al.indice], "consulta"))
         q_ag, fora = camada.query_agencias(al.consulta, agencias)
         if "site:" in q_ag["q"]:
-            b.append((com_motor(q_ag), [al.indice], "agencias" + (f" (-{len(fora)} fora do limite)" if fora else "")))
+            b.append((motor_da_consulta(q_ag), [al.indice], "agencias" + (f" (-{len(fora)} fora do limite)" if fora else "")))
     return _agrupar_iguais(a + b)
 
 
@@ -425,8 +529,8 @@ def criticar(estado: EstadoBusca, resumo: ResumoJulgamento, juiz_disponivel: boo
         acao, motivo = "parar", f"{resumo.clusters_postura} clusters independentes com postura"
     elif not juiz_disponivel:
         acao, motivo = "parar", "juiz indisponível: sem sinal para decidir outra onda"
-    elif estado.extras.get(ai, 0) >= estado.max_extras:
-        acao, motivo = "parar", f"máximo de ondas extras ({estado.max_extras}) atingido"
+    elif estado.extras.get(ai, 0) >= estado.limite_extras():
+        acao, motivo = "parar", f"máximo de ondas extras ({estado.limite_extras()}) atingido"
     elif estado.parar_motivo:
         acao, motivo = "parar", f"busca interrompida ({estado.parar_motivo})"
     elif estado.restante() <= 0:
