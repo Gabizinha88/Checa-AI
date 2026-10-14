@@ -28,6 +28,7 @@ from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, field_validator, model_validator
 
 from . import config, llm
+from .trecho_juiz import montar_trecho  # noqa: F401  (reexporta: chamadores usam juiz_llm.montar_trecho)
 
 log = logging.getLogger("factcheck.juiz")
 
@@ -35,10 +36,6 @@ CLASSES = ("SUSTENTA", "REFUTA", "RELATA_SEM_ENDOSSO", "NAO_TRATA")
 COM_POSTURA = ("SUSTENTA", "REFUTA")
 TRATA = ("SUSTENTA", "REFUTA", "RELATA_SEM_ENDOSSO")
 MOTOR_FALLBACK = "fallback-sem-juiz"
-
-_STOP = frozenset("""a o os as um uma de do da dos das em no na nos nas por pelo pela para com sem que se
-e ou mas como mais foi sao ser ter tem esta este isso essa ao aos nao sim sobre entre quando todo toda
-""".split())
 
 
 # ----------------------------------------------------------------------------- texto
@@ -48,41 +45,7 @@ def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
-def termos(texto: str) -> set:
-    return {t for t in _norm(texto).split() if len(t) >= 4 and t not in _STOP}
-
-
-def montar_trecho(titulo: str, corpo: str, afirmacao: str, limite: int = 0) -> str:
-    """Título + corpo até `limite` chars. Corpo longo: lide (2 frases) + frases com mais
-    termos da afirmação, na ordem original, separadas por ' … '."""
-    limite = limite or config.JUIZ_TRECHO_MAX or 3000
-    titulo = re.sub(r"\s+", " ", titulo or "").strip()
-    corpo = re.sub(r"\s+", " ", corpo or "").strip()
-    if corpo.startswith(titulo) and titulo:
-        corpo = corpo[len(titulo):].strip()
-    cabeca = (titulo + "\n") if titulo else ""
-    resto = max(0, limite - len(cabeca))
-    if len(corpo) <= resto:
-        return (cabeca + corpo).strip()
-    frases = [f for f in re.split(r"(?<=[.!?])\s+", corpo) if f]
-    alvo = termos(afirmacao)
-    pontos = [(len(alvo & termos(f)), -i, i) for i, f in enumerate(frases)]
-    escolhidas = {0, 1} & set(range(len(frases)))
-    usado = sum(len(frases[i]) + 3 for i in escolhidas)
-    for p, _, i in sorted(pontos, reverse=True):
-        if i in escolhidas or p == 0:
-            continue
-        if usado + len(frases[i]) + 3 > resto:
-            continue
-        escolhidas.add(i)
-        usado += len(frases[i]) + 3
-    partes, ant = [], -1
-    for i in sorted(escolhidas):
-        if ant >= 0 and i != ant + 1:
-            partes.append("…")
-        partes.append(frases[i])
-        ant = i
-    return (cabeca + " ".join(partes))[:limite].strip()
+# `montar_trecho` vive em trecho_juiz.py (Missão F / A4): uma só fonte da verdade.
 
 
 def verificar_citacao(citacao: str, texto: str) -> float:

@@ -204,12 +204,12 @@ def test_montar_trecho_preserva_conclusao_no_fim():
     paras = ([f"Parágrafo de contexto número {i} sobre assuntos variados da cidade." for i in range(80)]
              + ["Conclusão: é falso que a vacina altera o DNA humano."])
     texto = "\n".join(paras)
-    t = ap.montar_trecho(texto, "vacina altera DNA", limite=1500)
-    assert len(t) <= 1520
+    t = ap.montar_trecho("", texto, "vacina altera DNA", limite=1500)  # Missão F / A4: assinatura (titulo, corpo, afirmacao)
+    assert len(t) <= 1500
     assert t.startswith("Parágrafo de contexto número 0")
     assert "Conclusão: é falso que a vacina altera o DNA humano." in t
-    assert "[…]" in t
-    assert ap.montar_trecho("curto", "x") == "curto"
+    assert "…" in t
+    assert ap.montar_trecho("", "curto", "x") == "curto"
 
 
 # ----------------------------------------------------------------------------- aprofundar

@@ -845,14 +845,13 @@ class Pipeline:
             por_af.setdefault(ai, []).append(pi)
         for ai in list(por_af):
             por_af[ai] = sorted(por_af[ai], key=lambda pi: (str(pecas[pi].get("url") or ""), pi))
-        # Trecho só p/ telemetria (n_chars_trecho): o julgamento usa manchete+corpo via avaliador.
+        # Trecho só p/ telemetria (n_chars_trecho): é o MESMO que o avaliador manda ao juiz
+        # (`avaliador.trecho_da_peca`, Missão F / A4), então n_chars_trecho = len(trecho do prompt).
         trechos: Dict[Tuple[int, int], str] = {}
         for ai, pis in por_af.items():
             alvo = afs[ai].alvo()
             for pi in pis:
-                p = pecas[pi]
-                corpo = p.get("trecho_juiz") or p.get("corpo") or p.get("trecho") or p.get("snippet") or ""
-                trechos[(pi, ai)] = juiz_llm.montar_trecho(p.get("titulo") or "", corpo, alvo)
+                trechos[(pi, ai)] = avaliador.trecho_da_peca(alvo, pecas[pi])
 
         def _normalizar(a: Dict[str, Any]) -> Dict[str, Any]:
             return {
