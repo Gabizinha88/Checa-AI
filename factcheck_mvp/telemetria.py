@@ -99,7 +99,8 @@ _RX_REDACAO = [
     # chaves no formato sk-... (OpenRouter/OpenAI)
     (re.compile(r"\bsk-(?:or-v1-)?[A-Za-z0-9_-]{16,}"), "sk-REDACTED"),
 ]
-_ENV_SEGREDOS = ("SERPAPI_KEY", "OPENROUTER_API_KEY", "TELEGRAM_TOKEN", "UNSLOTH_API_KEY", "LANGFUSE_SECRET_KEY")
+_ENV_SEGREDOS = ("SERPAPI_KEY", "OPENROUTER_API_KEY", "TELEGRAM_TOKEN", "UNSLOTH_API_KEY",
+                 "LANGFUSE_SECRET_KEY", "GOOGLE_FACTCHECK_API_KEY")
 
 
 def redigir(texto: str) -> str:

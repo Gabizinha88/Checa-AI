@@ -37,6 +37,11 @@ def _bool(name: str, default: bool = False) -> bool:
 
 TELEGRAM_TOKEN = _get("TELEGRAM_TOKEN")
 SERPAPI_KEY = _get("SERPAPI_KEY")
+# Google Fact Check Tools API (ClaimReview de várias agências; base extra, só com INDICE_CHECAGENS=1).
+# Vazio = desligado. Chave do Google Cloud com a "Fact Check Tools API" habilitada.
+FACTCHECK_API_KEY = _get("GOOGLE_FACTCHECK_API_KEY")
+FACTCHECK_MAX_ITENS = _int("FACTCHECK_MAX_ITENS", 5)
+FACTCHECK_TIMEOUT_S = _int("FACTCHECK_TIMEOUT_S", 8)
 OPENROUTER_API_KEY = _get("OPENROUTER_API_KEY")
 OPENROUTER_MODEL = _get("OPENROUTER_MODEL", "deepseek/deepseek-v4-flash")
 OPENROUTER_FALLBACK_MODEL = _get("OPENROUTER_FALLBACK_MODEL", "google/gemma-4-26b-a4b-it:free")

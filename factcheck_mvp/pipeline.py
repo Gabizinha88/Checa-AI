@@ -24,7 +24,7 @@ import unicodedata
 from typing import Any, Awaitable, Callable, Dict, List, Literal, Optional, Tuple
 
 from . import (afirmacoes, aplicabilidade, avaliador, confiabilidade, config, corroboracao, decisao, eval_modo,
-               juiz_llm, padroes_llm, replay, selos, telemetria, trava_indice)
+               factcheck_api, juiz_llm, padroes_llm, replay, selos, telemetria, trava_indice)
 from . import agente as _agente
 from . import observabilidade
 from . import sintetizador  # Missão F / A2
@@ -368,18 +368,25 @@ class Pipeline:
         estado_agente: Optional[_agente.EstadoBusca] = None
         excluidas = eval_modo.urls_excluidas(entrada)  # A1: só avaliação; vazio em produção
         if _indice.habilitado() and hasattr(self.idx_ver, "buscar_checagens"):
-            n_hits = 0
+            n_hits = n_api = 0
             for ai, af in enumerate(afs):
                 try:
                     hits = self.idx_ver.buscar_checagens(af.alvo(), k=5)
                 except Exception as e:
                     telemetria.fallback("indice", f"{type(e).__name__}: {e}")
                     hits = []
-                hits = eval_modo.filtrar_pecas(hits, excluidas, "indice")
-                for h in hits:
+                hits = eval_modo.filtrar_pecas(hits, excluidas, "indice")  # A1: no-op em produção
+                origens = ["indice"] * len(hits)
+                if factcheck_api.ativo():  # base extra: checagens de várias agências pela API do Google
+                    api = await asyncio.to_thread(factcheck_api.buscar, af.alvo())
+                    if excluidas:  # itens excluídos no eval não voltam nem pela API (A1)
+                        api = eval_modo.filtrar_pecas(api, excluidas, "factcheck-api")
+                    n_api += len(api)
+                    hits, origens = hits + api, origens + ["factcheck-api"] * len(api)
+                for h, origem in zip(hits, origens):
                     if not h.get("url"):
                         continue
-                    n_hits += 1
+                    n_hits += origem == "indice"
                     bruta_base = h.get("data_pub")
                     norm_base = (aplicabilidade.normalizar_data(bruta_base)
                                  if isinstance(bruta_base, str) and bruta_base.strip() else None)
@@ -388,7 +395,7 @@ class Pipeline:
                                             valor=str(bruta_base)[:40])
                     pecas_base.append({"url": h["url"], "titulo": h.get("titulo") or h.get("afirmacao_checada") or "",
                                    "veiculo": h.get("agencia_nome") or h.get("agencia") or "",
-                                   "afs": {ai}, "origens": {"indice"}, "trecho": h.get("trecho") or "",
+                                   "afs": {ai}, "origens": {origem}, "trecho": h.get("trecho") or "",
                                    "data_pub": norm_base[0] if norm_base else None,
                                    "data_pub_precisao": norm_base[1] if norm_base else None,
                                    "data_pub_bruta": bruta_base, "agencia": h.get("agencia"),
@@ -397,8 +404,9 @@ class Pipeline:
                                   "veredito": _veredito_tipado(h.get("veredito"), h.get("selo_original"),
                                                                h.get("agencia")),
                                   "origem_veredito": "indice", "score_rel": h.get("score_rel")})
-            etapa("base-checagem", "ok" if n_hits else "parcial",
-                  f"{n_hits} checagem(ns) no índice (atalho INDICE_CHECAGENS=1).",
+            etapa("base-checagem", "ok" if n_hits or n_api else "parcial",
+                  f"{n_hits} checagem(ns) no índice (atalho INDICE_CHECAGENS=1)"
+                  + (f", {n_api} do Google Fact Check." if factcheck_api.ativo() else "."),
                   [p["url"] for p in pecas_base[:5]])
         else:
             etapa("base-checagem", "pulada", "Atalho do índice desligado (INDICE_CHECAGENS=0): núcleo = busca aberta.")
