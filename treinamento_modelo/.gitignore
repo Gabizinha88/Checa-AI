@@ -1,0 +1,7 @@
+# CSVs extraídos do dataset.zip
+data/
+
+# Gerados pelo pipeline (parquets e pesos do modelo)
+prepare/processed/
+prepare/processed_dedup/
+train/artifacts/
