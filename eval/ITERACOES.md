@@ -408,3 +408,30 @@ Nova chave da SerpAPI informada pela usuária (usada só como variável de ambie
 - **O que continua sem prova** (auditor D): "80%" tem IC95% de Wilson ≈ 67–89% e `fora_da_base` 7/10 ≈ 40–89%; r3→r4 mudou 1 caso e 11 dos 20 casos com web leram a web do cassete; nada sobre boato velho (> 6 meses), boato só do boatos.org/e-farsas, verdadeiras inéditas; R11 teve **0 disparos** e R1 (agência 1,5) foi exercido 4 vezes, nunca decisivo (sempre ≥ 2 clusters); "Café não cura câncer" (negação sem atribuição) saiu `afirma` com "não" no núcleo, contra o exemplo da regra 2, e não há trava determinística de que `afirma` ⇒ núcleo ≈ afirmação; 4 dos 50 casos sofreram queda do provedor de LLM (504/429).
 - Modo: web ligada · **103 buscas SerpAPI** nesta fase (conta: 22 → 125 usadas de 250 no mês; inclui ~23 de uma rodada interrompida no Google orgânico, a pedido de troca para o News) · OpenRouter ≈ US$ 0,38 nesta fase (total da sessão ≈ US$ 0,50; saldo US$ 1,44).
 - Incidente operacional: um `taskkill` de todos os `python.exe` (mais amplo que o necessário) foi executado ao encerrar a API; o `bot.lock` era de 23/09 e não havia outro processo identificado, mas é possível que algum Python da usuária tenha sido encerrado.
+
+## Missão F — recomendações da auditoria E (14/10)
+
+Auditoria E (Opus, independente, dados puxados do Langfuse): os 78% de r5 são em boa parte circulares (28/28 acertos da
+base vieram da própria `url_checagem` do caso); pela web foram 11/22 = 50% (IC95 31–69%). Itens implementados por 8
+agentes Sonnet em paralelo (worktrees), integrados por merge; **tudo que muda decisão está atrás de flag desligada**.
+
+| item | o que | flag | 
+|---|---|---|
+| A1 | fonte deixada de fora, repetições sem cache do juiz, `eval/comparar_simulacoes.py` (Wilson, McNemar) | `EVAL_MODO=1` |
+| A4 | trecho do juiz único (`trecho_juiz.py`): título + lide + conclusão + frases relevantes, sem boilerplate; `n_chars_trecho` mede o prompt | `JUIZ_TRECHO_MODO=novo` (padrão) / `antigo` |
+| A6 | trava de similaridade (Dice ≥ 0,6) no atalho do índice com 1 cluster → teto media | `INDICE_TRAVA_SIMILARIDADE=1` |
+| A3 | autoconsistência k=3 quando 1 julgamento decide; divergência → RELATA | `JUIZ_AUTOCONSISTENCIA=1` |
+| 7 | extrator: `marcadores_tempo` próprio (E4 via `texto_temporal`), consulta sem ruído, alegações independentes separadas | prompt direto; `EXTRATOR_LIMPEZA=1` |
+| 8 | `usage`/`finish_reason` no evento llm; `juiz_estado` (nada_para_julgar × indisponível); tokens/custo no Langfuse | sempre |
+| A5 | planejador: relaxa consulta vazia, `site:` no Google orgânico, lê mais, até 3 ondas extras | `BUSCA_PLANEJADOR=1` |
+| A2 | sintetizador por afirmação que só rebaixa (trava no código); `buscar_mais` só sinaliza | `SINTETIZADOR=1` |
+
+- Achado do item 8: a "saída truncada" de `reformular` era do provedor (`finish_reason=length`: 258 de 297 tokens em
+  raciocínio com `max_tokens=300`); pendente subir o `max_tokens` (muda cassete).
+- Verificação: pytest 962 → 1148 passed; `eval.decisao` a3-dev inalterado com flags desligadas (acerto 0,1884, erro
+  grave 0); nenhum arquivo de dados, gabarito ou baseline alterado.
+- Prévia sem rede (replay, fonte deixada de fora, K=1, antes das mudanças): geral sem `antigas` 16/45 = 35,6%, web 11/40;
+  deflacionada porque as buscas dos casos antes resolvidos pela base nunca foram gravadas.
+- **Pendente:** linha de base e medição final com web (o comando que subia a API com a chave da SerpAPI na linha de
+  comando foi bloqueado pelo classificador de permissões; aguarda a usuária pôr a chave no `.env`). Nenhuma flag deve
+  virar padrão antes disso.
