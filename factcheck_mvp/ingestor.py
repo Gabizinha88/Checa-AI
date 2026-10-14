@@ -1,4 +1,4 @@
-"""Ingestor de checagens: RSS/Atom (+ WP REST) das agências -> data/checagens.jsonl.
+"""Ingestor de checagens: RSS/Atom (+ WP REST) das agências -> data/checagens.jsonl.gz.
 
 Substitui o br_news_crawler como fonte do índice de vereditos (achado A1 da
 revisão: o índice antigo tinha 17 docs, todos homepages/menus). Usa só os
@@ -24,6 +24,7 @@ URLs listadas em data/checagens_holdout_excluidas.json nunca entram (eval
 from __future__ import annotations
 
 import argparse
+import gzip
 import html as _html
 import json
 import re
@@ -42,7 +43,7 @@ from urllib.parse import quote, unquote, urljoin, urlsplit, urlunsplit
 from . import jsonld, selos
 
 BASE_DIR = Path(__file__).resolve().parent
-ARQ_CHECAGENS = BASE_DIR / "data" / "checagens.jsonl"
+ARQ_CHECAGENS = BASE_DIR / "data" / "checagens.jsonl.gz"  # .gz versionado (F4); .jsonl também é lido
 ARQ_EXCLUIDAS = BASE_DIR / "data" / "checagens_holdout_excluidas.json"
 ARQ_CATALOGO = BASE_DIR / "data" / "catalogo.json"
 
@@ -58,7 +59,12 @@ FONTES: List[Dict[str, Any]] = [
     {"agencia": "lupa", "nome": "Lupa",
      "feeds": ["https://www.agencialupa.org/feed/"],
      # o feed da Lupa ignora ?paged=N; a API REST do WordPress pagina de verdade
-     "wpjson": "https://www.agencialupa.org/wp-json/wp/v2/posts"},
+     "wpjson": "https://www.agencialupa.org/wp-json/wp/v2/posts",
+     # só Verificação (142), Checagem (147) e Achado (6915): "Jornalismo" (8 mil posts) é guarda-chuva
+     # de reportagem, opinião e institucional, que entravam na base sem selo (F3, 09/10/2026)
+     "wpjson_params": "&categories=142,147,6915",
+     # mesmo filtro no RSS (que traz as categorias por nome); item com selo no título fica sempre
+     "categorias": ["Verificação", "Checagem", "Achado"]},
     {"agencia": "boatos", "nome": "Boatos.org",
      "feeds": ["https://www.boatos.org/feed"], "paginar": True,
      # API REST pagina o histórico inteiro (~15 mil posts em 10/2026; o RSS só os recentes)
@@ -77,20 +83,29 @@ FONTES: List[Dict[str, Any]] = [
      "ignorar_titulo": r"^fato ou fake: veja como|^candidatos .* assinam compromisso"},
     {"agencia": "aos-fatos", "nome": "Aos Fatos",
      # descoberto via <link rel="alternate"> da home; /rss/ do catálogo dá 404
-     "feeds": ["https://www.aosfatos.org/noticias/feed/"]},
+     "feeds": ["https://www.aosfatos.org/noticias/feed/"],
+     # sem API do WordPress: o histórico vem do sitemap (só entra o que tiver selo na página)
+     "sitemaps": ["https://www.aosfatos.org/sitemap-noticias.xml"], "sitemap_urls": r"/noticias/[^/]+/?$"},
     {"agencia": "estadao-verifica", "nome": "Estadão Verifica",
      # /estadao-verifica/feed/ dá 404; o feed Arc da seção funciona
      "feeds": ["https://www.estadao.com.br/arc/outboundfeeds/feeds/rss/sections/estadao-verifica/"]},
     {"agencia": "comprova", "nome": "Projeto Comprova",
      # /feed/ raiz está parado em 2019; as checagens estão em /publicações/
      "feeds": ["https://projetocomprova.com.br/publica%C3%A7%C3%B5es/feed/"], "paginar": True,
-     "ignorar_titulo": r"^comprova lan[cç]a"},
-    # 403 (Akamai/Cloudflare) para GET simples em 28/09 — mantidos para registrar o status
-    {"agencia": "uol-confere", "nome": "UOL Confere",
-     "feeds": ["https://noticias.uol.com.br/confere/index.xml"]},
-    {"agencia": "afp-checamos", "nome": "AFP Checamos",
-     "feeds": ["https://checamos.afp.com/rss"]},
+     "ignorar_titulo": r"^comprova lan[cç]a",
+     # índice com um sitemap por mês (do mais novo ao mais antigo)
+     "sitemaps": ["https://projetocomprova.com.br/sitemap.xml"], "sitemap_filhos": r"sitemap-posttype-answer",
+     "sitemap_urls": r"/publica"},
+    # Os RSS antigos dão 404 desde 10/2026; o histórico vem do sitemap (via curl_cffi, PR #15)
+    {"agencia": "uol-confere", "nome": "UOL Confere", "feeds": [],
+     "sitemaps": ["https://noticias.uol.com.br/sitemap/v2/news-01.xml"],
+     "sitemap_urls": r"/confere/ultimas-noticias/"},
+    {"agencia": "afp-checamos", "nome": "AFP Checamos", "feeds": [],
+     "sitemaps": ["https://checamos.afp.com/sitemap.xml"], "sitemap_urls": r"checamos\.afp\.com/[^/]*-[^/]*$"},
 ]
+
+# Páginas novas lidas do sitemap por agência e execução (1 req/s por site): o histórico entra aos poucos
+SITEMAP_MAX_POR_EXECUCAO = 150
 
 # Portais `tipo: checagem` do catálogo que NÃO são agências de checagem (a revisão
 # apontou: ValorInveste é cobertura de golpes, Tatu é jornalismo de dados) ou
@@ -204,6 +219,17 @@ def texto_de_html(fragmento: Optional[str]) -> str:
     t = _html.unescape(_html.unescape(t))
     t = re.sub(r"[ \t\r\f\v ]+", " ", t)
     return re.sub(r"\s*\n\s*", "\n", t).strip()
+
+
+_RE_OG_TITLE = re.compile(r"""<meta[^>]+property=["']og:title["'][^>]*content=["']([^"']+)["']""", re.I)
+_RE_TITLE = re.compile(r"<title[^>]*>(.*?)</title>", re.I | re.S)
+
+
+def titulo_da_pagina(html: str) -> str:
+    """og:title, senão <title> sem o sufixo " | Site" / " - Site". Para item que só tem a URL (sitemap)."""
+    m = _RE_OG_TITLE.search(html or "") or _RE_TITLE.search(html or "")
+    t = _html.unescape(re.sub(r"\s+", " ", m.group(1))).strip() if m else ""
+    return re.sub(r"\s+[|–—-]\s+[^|–—-]{2,40}$", "", t) if not _RE_OG_TITLE.search(html or "") else t
 
 
 def _paragrafos_pagina(html: str, limite: int = 8) -> str:
@@ -506,7 +532,7 @@ def montar_registro(item: Dict[str, Any], agencia: str, html_pagina: Optional[st
     corpo_rss = texto_de_html(item.get("corpo_html"))
     info = jsonld.extrair(html_pagina) if html_pagina else {"claim_reviews": [], "article_body": None,
                                                            "headline": None, "data_pub": None, "autor": None}
-    titulo = titulo or info.get("headline") or ""
+    titulo = titulo or info.get("headline") or (titulo_da_pagina(html_pagina) if html_pagina else "")
     corpo = info.get("article_body") or corpo_rss or (_paragrafos_pagina(html_pagina) if html_pagina else "")
 
     reg: Dict[str, Any] = {
@@ -558,11 +584,17 @@ def montar_registro(item: Dict[str, Any], agencia: str, html_pagina: Optional[st
 
 
 # ----------------------------------------------------------------------------- persistência
+def _ler_texto(caminho: Path) -> str:
+    """Conteúdo de .jsonl ou .jsonl.gz (pelo sufixo)."""
+    dados = caminho.read_bytes()
+    return (gzip.decompress(dados) if caminho.suffix == ".gz" else dados).decode("utf-8")
+
+
 def carregar_jsonl(caminho: Path) -> List[Dict[str, Any]]:
     if not caminho.exists():
         return []
     saida = []
-    for linha in caminho.read_text(encoding="utf-8").splitlines():
+    for linha in _ler_texto(caminho).splitlines():
         linha = linha.strip()
         if linha:
             try:
@@ -611,9 +643,10 @@ def mesclar(existentes: List[Dict[str, Any]], novos: List[Dict[str, Any]],
 def gravar_jsonl(caminho: Path, registros: List[Dict[str, Any]]) -> None:
     caminho.parent.mkdir(parents=True, exist_ok=True)
     tmp = caminho.with_suffix(caminho.suffix + ".tmp")
-    with tmp.open("w", encoding="utf-8") as f:
-        for r in registros:
-            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    dados = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in registros).encode("utf-8")
+    if caminho.suffix == ".gz":  # mtime=0: mesmo conteúdo -> mesmos bytes (sem diff falso no git)
+        dados = gzip.compress(dados, compresslevel=9, mtime=0)
+    tmp.write_bytes(dados)
     tmp.replace(caminho)
 
 
@@ -642,11 +675,61 @@ def _fontes_com_catalogo() -> List[Dict[str, Any]]:
     return fontes
 
 
+_RE_SM_BLOCO = re.compile(r"<(url|sitemap)\b[^>]*>(.*?)</\1>", re.S | re.I)
+_RE_SM_LOC = re.compile(r"<loc>\s*(?:<!\[CDATA\[)?\s*([^<\s\]]+)", re.I)
+_RE_SM_LASTMOD = re.compile(r"<lastmod>\s*([^<\s]+)", re.I)
+
+
+def parse_sitemap(conteudo: bytes) -> Tuple[str, List[Tuple[str, Optional[str]]]]:
+    """-> ("urlset"|"indice"|"", [(loc, lastmod AAAA-MM-DD ou None)])."""
+    texto = _decodificar(conteudo or b"")
+    tipo = "indice" if re.search(r"<sitemapindex\b", texto, re.I) else ("urlset" if re.search(r"<urlset\b", texto, re.I) else "")
+    itens = []
+    for _, bloco in _RE_SM_BLOCO.findall(texto) if tipo else []:
+        m = _RE_SM_LOC.search(bloco)
+        if m:
+            lm = _RE_SM_LASTMOD.search(bloco)
+            itens.append((_html.unescape(m.group(1)), lm.group(1)[:10] if lm else None))
+    return tipo, itens
+
+
+def _itens_do_sitemap(b: Baixador, fonte: Dict[str, Any], status: List[Dict[str, Any]],
+                      ja_na_base: set, teto: int) -> List[Dict[str, Any]]:
+    """URLs novas (fora da base) dos sitemaps da fonte, até `teto`. Índice: segue os filhos que casam
+    com `sitemap_filhos`, na ordem do índice, e para de baixar filhos quando o teto enche."""
+    rx_url = re.compile(fonte["sitemap_urls"], re.I) if fonte.get("sitemap_urls") else None
+    rx_filho = re.compile(fonte["sitemap_filhos"], re.I) if fonte.get("sitemap_filhos") else None
+    fila, vistos, saida = list(fonte.get("sitemaps") or []), set(), []
+    while fila and len(saida) < teto:
+        sm = fila.pop(0)
+        if sm in vistos:
+            continue
+        vistos.add(sm)
+        cod, corpo, _ = b.baixar(sm)
+        tipo, itens = parse_sitemap(corpo) if cod == 200 else ("", [])
+        status.append({"agencia": fonte["agencia"], "feed": sm, "tipo": "sitemap", "http": cod, "itens": len(itens)})
+        if tipo == "indice":
+            fila = [u for u, _ in itens if not rx_filho or rx_filho.search(u)] + fila
+            continue
+        itens.sort(key=lambda x: x[1] or "", reverse=True)  # mais novos primeiro (sort estável)
+        for loc, lastmod in itens:
+            k = chave_url(loc)
+            if (rx_url and not rx_url.search(loc)) or k in ja_na_base:
+                continue
+            ja_na_base = ja_na_base | {k}
+            saida.append({"titulo": "", "link": loc, "data": lastmod, "corpo_html": "", "subtitulo": "",
+                          "categorias": [], "_sitemap": True})
+            if len(saida) >= teto:
+                break
+    return saida
+
+
 def coletar_itens(b: Baixador, fonte: Dict[str, Any], max_por_feed: int, paginas_feed: int,
-                  status: List[Dict[str, Any]], paginas_historico: Optional[int] = None) -> List[Dict[str, Any]]:
+                  status: List[Dict[str, Any]], paginas_historico: Optional[int] = None,
+                  ja_na_base: Optional[set] = None, max_sitemap: int = 0) -> List[Dict[str, Any]]:
     itens: List[Dict[str, Any]] = []
     feeds = list(fonte.get("feeds") or [])
-    if not feeds and fonte.get("homepage"):
+    if not feeds and fonte.get("homepage") and not fonte.get("sitemaps"):
         cod, corpo, final = b.baixar(fonte["homepage"])
         achados = descobrir_feeds(_decodificar(corpo), final) if cod == 200 else []
         status.append({"agencia": fonte["agencia"], "feed": fonte["homepage"], "tipo": "descoberta",
@@ -676,13 +759,20 @@ def coletar_itens(b: Baixador, fonte: Dict[str, Any], max_por_feed: int, paginas
             itens.extend(lidos)
             if len(lidos) < 50:
                 break
+    if fonte.get("sitemaps") and max_sitemap > 0:
+        conhecidas = set(ja_na_base or ()) | {chave_url(it.get("link", "")) for it in itens}
+        itens.extend(_itens_do_sitemap(b, fonte, status, conhecidas, max_sitemap))
     # dedupe dentro da agência (Aos Fatos repete itens no feed) e filtros
     vistos, saida = set(), []
     rx_url = re.compile(fonte["ignorar_url"], re.I) if fonte.get("ignorar_url") else None
     rx_tit = re.compile(fonte["ignorar_titulo"], re.I) if fonte.get("ignorar_titulo") else None
+    cats_ok = {_sem_acento(c).lower() for c in fonte.get("categorias") or []}
     for it in itens:
         k = chave_url(it.get("link", ""))
         if not it.get("link") or k in vistos:
+            continue
+        if cats_ok and it.get("categorias") and not cats_ok & {_sem_acento(c).lower() for c in it["categorias"]} \
+                and not veredito_do_titulo(it.get("titulo", ""), fonte["agencia"])[0]:
             continue
         if rx_url and rx_url.search(it["link"]):
             continue
@@ -693,10 +783,43 @@ def coletar_itens(b: Baixador, fonte: Dict[str, Any], max_por_feed: int, paginas
     return saida
 
 
+def podar_fora_das_categorias(b: Baixador, fonte: Dict[str, Any], registros: List[Dict[str, Any]],
+                              log=print) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """-> (ficam, saem). Tira da base os registros SEM selo da agência que não estão nas categorias
+    de `wpjson_params` (lista de links pela API). Página com erro = lista incompleta: não poda nada."""
+    m = re.search(r"categories=([\d,]+)", fonte.get("wpjson_params") or "")
+    if not (m and fonte.get("wpjson")):
+        return registros, []
+    links: set = set()
+    for pg in range(1, 1000):
+        url = f"{fonte['wpjson']}?per_page=100&page={pg}&_fields=link&categories={m.group(1)}"
+        cod, corpo, _ = b.baixar(url)
+        try:
+            lote = json.loads(corpo) if cod == 200 else None
+        except ValueError:
+            lote = None
+        if not isinstance(lote, list):
+            log(f"  [{fonte['agencia']}] lista de categorias incompleta (HTTP {cod} na página {pg}): nada podado")
+            return registros, []
+        links |= {chave_url(d.get("link", "")) for d in lote if isinstance(d, dict) and d.get("link")}
+        if len(lote) < 100:
+            break
+    ag = fonte["agencia"]
+    ficam, saem = [], []
+    for r in registros:
+        fora = r.get("agencia") == ag and not r.get("veredito") and chave_url(r.get("url", "")) not in links
+        (saem if fora else ficam).append(r)
+    log(f"  [{ag}] {len(links)} links nas categorias; {len(saem)} registros sem selo fora delas saem")
+    return ficam, saem
+
+
 def processar_fonte(b: Baixador, fonte: Dict[str, Any], max_por_feed: int, paginas_feed: int,
                     sem_paginas: bool, excluidas: set, status: List[Dict[str, Any]],
-                    log=print, paginas_historico: Optional[int] = None) -> List[Dict[str, Any]]:
-    itens = coletar_itens(b, fonte, max_por_feed, paginas_feed, status, paginas_historico)
+                    log=print, paginas_historico: Optional[int] = None, ja_na_base: Optional[set] = None,
+                    max_sitemap: int = SITEMAP_MAX_POR_EXECUCAO) -> List[Dict[str, Any]]:
+    # sitemap só traz a URL: sem baixar a página (--sem-paginas) não há o que guardar
+    itens = coletar_itens(b, fonte, max_por_feed, paginas_feed, status, paginas_historico,
+                          ja_na_base=ja_na_base, max_sitemap=0 if sem_paginas else max_sitemap)
     regs = []
     for it in itens:
         if chave_url(it["link"]) in excluidas:
@@ -710,7 +833,10 @@ def processar_fonte(b: Baixador, fonte: Dict[str, Any], max_por_feed: int, pagin
                 final = None
                 status.append({"agencia": fonte["agencia"], "feed": it["link"], "tipo": "pagina",
                                "http": cod, "itens": 0})
-        regs.append(montar_registro(it, fonte["agencia"], html_pag, final))
+        reg = montar_registro(it, fonte["agencia"], html_pag, final)
+        if it.get("_sitemap") and not reg.get("veredito"):
+            continue  # do sitemap só entra checagem com selo (o sitemap mistura reportagem e institucional)
+        regs.append(reg)
     log(f"  [{fonte['agencia']}] {len(regs)} itens")
     return regs
 
@@ -751,9 +877,11 @@ def imprimir_estatisticas(registros: List[Dict[str, Any]], status: List[Dict[str
 
 def ingerir(max_por_feed: int = 100, sem_paginas: bool = False, paginas_feed: int = 3,
             saida: Optional[Path] = None, log=print, paginas_historico: Optional[int] = None,
-            agencias: Optional[List[str]] = None) -> Dict[str, Any]:
+            agencias: Optional[List[str]] = None, max_sitemap: int = SITEMAP_MAX_POR_EXECUCAO) -> Dict[str, Any]:
     saida = saida or ARQ_CHECAGENS
     excluidas = carregar_excluidas()
+    existentes = carregar_jsonl(saida)
+    ja_na_base = {chave_url(r.get("url", "")) for r in existentes} | set(excluidas)
     fontes = _fontes_com_catalogo()
     if agencias:
         fontes = [f for f in fontes if f["agencia"] in agencias]
@@ -764,7 +892,8 @@ def ingerir(max_por_feed: int = 100, sem_paginas: bool = False, paginas_feed: in
         # uma thread por agência; o limitador garante 1 req/s por host
         with ThreadPoolExecutor(max_workers=max(1, len(fontes))) as ex:
             futuros = [ex.submit(processar_fonte, b, f, max_por_feed, paginas_feed, sem_paginas,
-                                 excluidas, status, log, paginas_historico) for f in fontes]
+                                 excluidas, status, log, paginas_historico, ja_na_base, max_sitemap)
+                       for f in fontes]
             for fu in futuros:
                 try:
                     novos.extend(fu.result())
@@ -772,7 +901,6 @@ def ingerir(max_por_feed: int = 100, sem_paginas: bool = False, paginas_feed: in
                     log(f"  erro numa fonte: {e!r}")
     finally:
         b.fechar()
-    existentes = carregar_jsonl(saida)
     todos = mesclar(existentes, novos, excluidas)
     gravar_jsonl(saida, todos)
     log(f"\nNovos nesta execução: {len(novos)} | no arquivo: {len(todos)} ({saida})")
@@ -811,18 +939,49 @@ def reprocessar(caminho: Optional[Path] = None, log=print) -> Dict[str, int]:
     return {"total": len(regs), "selo": n_selo, "afirmacao": n_afirm}
 
 
+def podar(caminho: Optional[Path] = None, agencias: Optional[List[str]] = None,
+          log_podados: Optional[Path] = None, log=print) -> Dict[str, int]:
+    """Aplica `podar_fora_das_categorias` às fontes com filtro de categoria e grava a base.
+    O que saiu vai para `log_podados` (padrão runs/podados-AAAA-MM-DD.jsonl, fora do git)."""
+    caminho = caminho or ARQ_CHECAGENS
+    regs = carregar_jsonl(caminho)
+    antes, todos_saem = len(regs), []
+    b = Baixador()
+    try:
+        for f in FONTES:
+            if (agencias and f["agencia"] not in agencias) or "categories=" not in (f.get("wpjson_params") or ""):
+                continue
+            regs, saem = podar_fora_das_categorias(b, f, regs, log)
+            todos_saem += saem
+    finally:
+        b.fechar()
+    if todos_saem:
+        log_podados = log_podados or BASE_DIR.parent / "runs" / f"podados-{datetime.now():%Y-%m-%d}.jsonl"
+        gravar_jsonl(log_podados, todos_saem)
+        gravar_jsonl(caminho, regs)
+        log(f"podados: {len(todos_saem)} (lista em {log_podados}) | base: {antes} -> {len(regs)}")
+    return {"antes": antes, "depois": len(regs), "podados": len(todos_saem)}
+
+
 def main(argv: Optional[List[str]] = None) -> int:
-    ap = argparse.ArgumentParser(description="Ingere checagens (RSS + JSON-LD ClaimReview) em data/checagens.jsonl")
+    ap = argparse.ArgumentParser(description="Ingere checagens (RSS + JSON-LD ClaimReview) em data/checagens.jsonl.gz")
     ap.add_argument("--max-por-feed", type=int, default=100, help="teto de itens por feed/página de feed")
     ap.add_argument("--sem-paginas", action="store_true", help="não baixa a página do artigo (sem ClaimReview)")
     ap.add_argument("--paginas-feed", type=int, default=3, help="páginas (?paged=N) nos feeds WordPress")
-    ap.add_argument("--saida", type=Path, default=None, help="padrão: data/checagens.jsonl")
+    ap.add_argument("--saida", type=Path, default=None, help="padrão: data/checagens.jsonl.gz (.jsonl sem gzip também serve)")
     ap.add_argument("--historico", type=int, default=None,
                     help="páginas da API WordPress (50 posts cada) para buscar o histórico; padrão = --paginas-feed")
     ap.add_argument("--agencias", default="", help="só estas agências (ids separados por vírgula)")
     ap.add_argument("--reprocessar", action="store_true",
                     help="sem rede: reaplica as regras de selo/afirmação ao arquivo existente")
+    ap.add_argument("--max-sitemap", type=int, default=SITEMAP_MAX_POR_EXECUCAO,
+                    help="páginas novas lidas do sitemap por agência nesta execução (0 = não lê sitemap)")
+    ap.add_argument("--podar-categorias", action="store_true",
+                    help="tira da base os registros sem selo fora das categorias de checagem (ex.: Lupa)")
     args = ap.parse_args(argv)
+    if args.podar_categorias:
+        podar(args.saida, [a.strip() for a in args.agencias.split(",") if a.strip()] or None)
+        return 0
     if args.reprocessar:
         reprocessar(args.saida)
         return 0
@@ -832,7 +991,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                          "sem_paginas": args.sem_paginas, "paginas_feed": args.paginas_feed}):
         ingerir(args.max_por_feed, args.sem_paginas, args.paginas_feed, args.saida,
                 paginas_historico=args.historico,
-                agencias=[a.strip() for a in args.agencias.split(",") if a.strip()] or None)
+                agencias=[a.strip() for a in args.agencias.split(",") if a.strip()] or None,
+                max_sitemap=args.max_sitemap)
     return 0
 
 

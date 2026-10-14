@@ -22,7 +22,7 @@ def test_prompt_de_reformulacao_no_google_news_nao_pede_checagem(monkeypatch):
     assert '"é falso"' not in p and "Google News" in p and "TODOS os termos" in p
     monkeypatch.setattr(config, "SERP_ENGINE", "google")
     p = agente.montar_prompt_reformular("Ibuprofeno cura dengue", ["a b c"], [])
-    assert '"é falso", "checagem"' in p and "TODOS os termos" not in p  # Google orgânico: como antes
+    assert '"é falso", "checagem"' not in p and "TODOS os termos" not in p  # merge #19+#20: sem veredito em todos os motores
 
 
 def test_reformular_llm_no_news_remove_vocabulario_de_checagem(monkeypatch):

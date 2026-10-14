@@ -5,7 +5,7 @@ Duas APIs convivem aqui:
 * **Legada** — `Indice.adicionar/buscar` sobre `ArtigoNoticia` (BM25Plus, piso
   absoluto no pipeline). Mantida enquanto o pipeline não migra.
 * **Checagens** — `Indice.buscar_checagens(afirmacao, k)` sobre
-  data/checagens.jsonl (gerado por `python3 -m factcheck_mvp.ingestor`):
+  data/checagens.jsonl.gz (gerado por `python3 -m factcheck_mvp.ingestor`):
   BM25 Okapi, tokenização PT (sem acento, stopwords, radical RSLP), campo
   `afirmacao_checada` com boost e **limiar relativo** (ver `_LIMIAR`).
 
@@ -15,6 +15,7 @@ O índice de checagens é um ATALHO OPCIONAL (o núcleo é a busca aberta):
 """
 from __future__ import annotations
 
+import gzip
 import json
 import logging
 import os
@@ -39,7 +40,7 @@ except Exception:  # pragma: no cover
     BM25_OK = False
 
 BASE_DIR = Path(__file__).resolve().parent
-ARQ_CHECAGENS = BASE_DIR / "data" / "checagens.jsonl"
+ARQ_CHECAGENS = BASE_DIR / "data" / "checagens.jsonl.gz"
 
 _STOP = frozenset(
     "a o os as um uma de do da dos das em no na nos nas por para com sem que se e ou mas como mais foi eram será são é esta este esta isto isso esse essa aquele aquela muito tão já ainda também pode podem tem têm há foi vão ser ter".split()
@@ -352,7 +353,7 @@ class Indice:
     # ------------------------------------------------------------------ checagens
     @classmethod
     def de_checagens(cls, fonte: Union[None, str, Path, List[Dict[str, Any]]] = None) -> "Indice":
-        """Índice só com checagens: `fonte` = caminho do .jsonl (padrão data/checagens.jsonl)
+        """Índice só com checagens: `fonte` = caminho do .jsonl (padrão data/checagens.jsonl.gz; .jsonl também)
         ou lista de registros."""
         idx = cls()
         idx.carregar_checagens(fonte)
@@ -366,7 +367,10 @@ class Indice:
             caminho = Path(fonte) if fonte else ARQ_CHECAGENS
             regs = []
             try:
-                for linha in caminho.read_text(encoding="utf-8").splitlines():
+                dados = caminho.read_bytes()
+                if caminho.suffix == ".gz":
+                    dados = gzip.decompress(dados)
+                for linha in dados.decode("utf-8").splitlines():
                     linha = linha.strip()
                     if not linha:
                         continue
@@ -374,7 +378,7 @@ class Indice:
                         regs.append(json.loads(linha))
                     except ValueError:
                         log.warning("linha inválida em %s", caminho)
-            except OSError as e:
+            except (OSError, EOFError, UnicodeDecodeError) as e:
                 log.warning("checagens indisponíveis (%s): %s", caminho, e)
         self.checagens = [r for r in regs if isinstance(r, dict) and (r.get("afirmacao_checada") or r.get("titulo"))]
         self._checagens_carregadas = True

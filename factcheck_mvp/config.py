@@ -37,6 +37,7 @@ def _bool(name: str, default: bool = False) -> bool:
 
 TELEGRAM_TOKEN = _get("TELEGRAM_TOKEN")
 SERPAPI_KEY = _get("SERPAPI_KEY")
+SERPAPI_TIMEOUT_S = _int("SERPAPI_TIMEOUT_S", 15)  # por tentativa; timeout/conexão ganha 1 nova tentativa
 # Google Fact Check Tools API (ClaimReview de várias agências; base extra, só com INDICE_CHECAGENS=1).
 # Vazio = desligado. Chave do Google Cloud com a "Fact Check Tools API" habilitada.
 FACTCHECK_API_KEY = _get("GOOGLE_FACTCHECK_API_KEY")
@@ -118,6 +119,10 @@ AGENTE_TIMEOUT_S = _int("AGENTE_TIMEOUT_S", 60)
 AGENTE_MAX_POR_AFIRMACAO = _int("AGENTE_MAX_POR_AFIRMACAO", 12)
 # Hosts extras de agências de checagem além das derivadas do catálogo (vírgula).
 SERP_SITES_EXTRAS = _get("SERP_SITES_EXTRAS", "")
+# Onda 1, parte (b): "or" = 1 consulta com (site:a OR site:b …) de todas as agências que couberem;
+# "separado" = 1 consulta `site:` por agência, nas AGENTE_SITES_SEPARADOS primeiras do catálogo (D1)
+AGENTE_SITES_MODO = _get("AGENTE_SITES_MODO", "or").strip().lower()
+AGENTE_SITES_SEPARADOS = _int("AGENTE_SITES_SEPARADOS", 3)
 # Teto por afirmação p/ crawl+avaliação (N×1: cada relevante). Literal = 12
 # (= `AGENTE_MAX_POR_AFIRMACAO`); literal (não alias no import) p/ não congelar
 # quando o env muda em runtime — o pipeline lê `AGENTE_MAX_POR_AFIRMACAO` direto.

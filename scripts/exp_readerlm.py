@@ -28,7 +28,7 @@ COMO RODAR
    (-np 1: com 4 slots cada requisição recebe 1/4 do contexto e o HTML é truncado.)
    Para comparar quantizações, suba de novo com :Q6_K / :Q4_K_M e rode com --quant.
 
-2) Rodar (default: URLs `origem=claimreview` de factcheck_mvp/data/checagens.jsonl +
+2) Rodar (default: URLs `origem=claimreview` de factcheck_mvp/data/checagens.jsonl.gz +
    fixtures tests/fixtures/jsonld/*.html.gz com ClaimReview; até --n 30):
 
        python3 scripts/exp_readerlm.py --quant Q8_0                 # HTML inteiro limpo
@@ -60,15 +60,15 @@ sys.path.insert(0, str(RAIZ))
 from factcheck_mvp import extracao, jsonld, replay, selos  # noqa: E402
 from factcheck_mvp.aprofundar import HEADERS_NAVEGADOR, MAX_BYTES_PADRAO  # noqa: E402
 
-CHECAGENS = RAIZ / "factcheck_mvp" / "data" / "checagens.jsonl"
+CHECAGENS = RAIZ / "factcheck_mvp" / "data" / "checagens.jsonl.gz"
 FIXTURES = RAIZ / "tests" / "fixtures" / "jsonld"
 
 
 def _urls_padrao(n: int) -> List[str]:
     urls: List[str] = []
     try:
-        for linha in CHECAGENS.read_text(encoding="utf-8").splitlines():
-            d = json.loads(linha)
+        from factcheck_mvp.ingestor import carregar_jsonl
+        for d in carregar_jsonl(CHECAGENS):
             if d.get("origem") == "claimreview" and d.get("url") and d["url"] not in urls:
                 urls.append(d["url"])
     except (OSError, ValueError):
@@ -128,7 +128,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--quant", default="Q8_0", help="rótulo da quantização servida (Q8_0|Q6_K|Q4_K_M)")
     ap.add_argument("--com-recorte", action="store_true",
                     help="recorta article/main/seletor do catálogo antes (default: HTML inteiro limpo)")
-    ap.add_argument("--urls", help="arquivo com 1 URL por linha (default: checagens.jsonl origem=claimreview)")
+    ap.add_argument("--urls", help="arquivo com 1 URL por linha (default: checagens.jsonl.gz origem=claimreview)")
     ap.add_argument("--n", type=int, default=30)
     ap.add_argument("--sem-fixtures", action="store_true", help="não inclui tests/fixtures/jsonld")
     ap.add_argument("--modelo", default=None, help="id do modelo em /v1/models (env READERLM_MODEL)")

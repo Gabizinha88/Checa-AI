@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
-from . import config
+from . import config, llm_openrouter
 from .catalogo import Catalogo
 from .indice import Indice
 from .pipeline import Pipeline
@@ -79,6 +79,7 @@ def saude():
             "serpapi_estrategia": getattr(config, "SERP_ESTRATEGIA", "agente"),
             "serpapi_uso_hoje": p.serpapi.uso_hoje,
             "serpapi_cap": getattr(config, "SERPAPI_DAILY_CAP", 100),
+            "openrouter": llm_openrouter.status_chave(),
             "versao": "mvp-0.2.0"}
 
 
@@ -185,7 +186,7 @@ def _link_html(url: str) -> str:
 
 def _render_html(entrada_txt: str, rel: RelatorioChecagem | None = None) -> str:
     from .agregador import (NOMES_ETAPAS, STATUS_ETAPA, data_publicacao_exibida, direcoes_por_url,
-                            linha_raciocinio, postura_legivel, texto_de_linha)
+                            linha_raciocinio, postura_legivel, rotulo_selo, texto_de_linha)
     from .confiabilidade import ROTULO
     esc = html.escape
     corpo = f"<form method='post' action='/checar-web'>" \
@@ -227,7 +228,7 @@ def _render_html(entrada_txt: str, rel: RelatorioChecagem | None = None) -> str:
             return (f"<div style='border:1px solid #ccc;border-radius:6px;padding:8px;margin:6px 0'>"
                     f"<b>{esc(texto_de_linha(f.portal_nome) or 'web')}</b> "
                     f"<span style='color:{cor.get(post, '#555')}'>{esc(post)}</span>"
-                    f"{' · selo da agência: ' + esc(texto_de_linha(f.veredito)) if f.veredito else ''}"
+                    f"{' · ' + esc(texto_de_linha(rotulo_selo(f))) if f.veredito else ''}"
                     f" · {leitura}"
                     f"{' · ' + esc(ROTULO[f.confiabilidade]) if f.confiabilidade in ROTULO else ''}<br/>"
                     f"{esc(texto_de_linha(f.titulo)[:200])}<br/>"

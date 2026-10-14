@@ -290,7 +290,7 @@ def formatar(rel: RelatorioChecagem) -> str:
     # Top 2-3 lado a lado: portal | o que a fonte faz | lida ou só manchete | link + citação
     if uteis:
         from .agregador import (data_publicacao_exibida, direcoes_por_url, linha_raciocinio, postura_legivel,
-                                texto_de_linha)
+                                rotulo_selo, texto_de_linha)
         from .confiabilidade import ROTULO
         direcoes = direcoes_por_url(getattr(rel, "decisao", None))
         nao_lidas = _urls_nao_analisadas(rel)
@@ -302,7 +302,7 @@ def formatar(rel: RelatorioChecagem) -> str:
         linhas.append("O que as fontes dizem:")
         for i, f in enumerate(uteis[:3], 1):
             # I1: nome, selo, título, citação e URL vindos da página entram achatados (uma linha cada).
-            selo = f" [selo da agência: {texto_de_linha(f.veredito)}]" if f.veredito else ""
+            selo = f" [{texto_de_linha(rotulo_selo(f))}]" if f.veredito else ""
             if getattr(f, "corpo_lido", False) and f.url not in nao_lidas:
                 corpo = "📄 texto lido"
             else:
@@ -378,6 +378,19 @@ def _cortar_telegram(texto: str, limite: int = LIMITE_TELEGRAM) -> str:
     return texto[:lo].rsplit("\n", 1)[0]
 
 
+def aviso_llm() -> str:
+    """Linha de alerta quando o OpenRouter recusa a chave (F5). Rede instável (ok=None) não alarma."""
+    try:
+        from . import llm_openrouter
+        st = llm_openrouter.status_chave()
+    except Exception:
+        return ""
+    if st.get("ok") is False:
+        return ("⚠️ LLM indisponível (" + str(st.get("erro") or "chave do OpenRouter") + "): avise o "
+                "administrador. Esta checagem usou só regras simples e pode ficar indeterminada.")
+    return ""
+
+
 async def _start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message:
         await update.message.reply_text(AJUDA)
@@ -440,7 +453,9 @@ async def _checar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                        "propensao": rel.propensao, "header": rel.header}
         while len(pend) > 500:
             pend.pop(next(iter(pend)))
-        await aviso.edit_text(formatar(rel), reply_markup=_teclado_feedback(chave))
+        alerta = aviso_llm()
+        await aviso.edit_text(formatar(rel) + (f"\n\n{alerta}" if alerta else ""),
+                              reply_markup=_teclado_feedback(chave))
     except Exception:
         uid = update.effective_user.id if update.effective_user else "?"
         log.exception("falha na checagem (user=%s)", uid)  # detalhe só no servidor

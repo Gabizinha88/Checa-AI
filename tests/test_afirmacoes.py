@@ -105,3 +105,50 @@ def test_consulta_sem_termos_inventados_nem_palavra_de_veredito(monkeypatch):
                                       "polaridade": "afirma", "consulta": "falso cafe cura cancer onco terapia"}])])
     a = afirmacoes.extrair_afirmacoes("Café cura câncer")[0][0]
     assert a.consulta == "Café cura câncer"
+
+
+import pytest as _pytest
+
+from factcheck_mvp import afirmacoes as _af
+
+
+@_pytest.mark.parametrize("texto,esperado", [
+    ("Recebi isso no grupo da família: “É falso que a vacina da covid altera o DNA.” Alguém sabe se é verdade?",
+     "É falso que a vacina da covid altera o DNA."),
+    ("Gente, estão compartilhando isso no WhatsApp: “vazou um áudio do Renan Santos.” Isso procede?",
+     "vazou um áudio do Renan Santos."),
+    ("Minha tia encaminhou isso no grupo: “Hoje, Bolsonaro quis impedir familiares.” Dá pra confiar?",
+     "Hoje, Bolsonaro quis impedir familiares."),  # o "Hoje" fica: a regra de data precisa dele
+    ("Me mandaram essa mensagem e fiquei na dúvida: “Café cura câncer.”", "Café cura câncer."),
+    ("O ministro disse: “vamos taxar o Pix”", "O ministro disse: “vamos taxar o Pix”"),  # fala, não encaminhamento
+    ("Café cura câncer", "Café cura câncer"),
+])
+def test_tira_moldura_de_encaminhamento(texto, esperado):
+    assert _af.tirar_encaminhamento(texto) == esperado
+
+
+def test_negacao_citada_vence_llm_que_errou_a_polaridade(monkeypatch):
+    """Simulação de 09/10: o LLM devolveu 'afirma' para a negação citada → 5 checagens refutando
+    viraram 'alta' (único falso alarme). A moldura determinística volta a valer."""
+    from factcheck_mvp import llm
+    texto = "Recebi isso no grupo da família: “É falso que a vacina da covid altera o DNA.” Alguém sabe se é verdade?"
+
+    def llm_errado(messages, schema, finalidade, max_tokens, validar=None, **kw):
+        itens = validar([{"afirmacao": "A vacina da covid altera o DNA", "nucleo": "A vacina da covid altera o DNA",
+                          "polaridade": "afirma", "consulta": "vacina covid altera DNA"}])
+        return llm.ResultadoLLM(ok=True, dados=itens, motor="fake", modelo="fake")
+    monkeypatch.setattr(llm, "chat_json", llm_errado)
+    afs, _ = _af.extrair_afirmacoes(texto)
+    assert afs[0].polaridade == "nega" and afs[0].nucleo == "A vacina da covid altera o DNA"
+
+
+def test_fallback_regex_nao_poe_moldura_no_nucleo():
+    afs, motor = _af.extrair_afirmacoes(
+        "Gente, estão compartilhando isso no WhatsApp: “Vazou um áudio do Renan Santos falando com o Vorcaro.” "
+        "Isso procede?", usar_llm=False)
+    assert motor == "fallback-regex" and "WhatsApp" not in afs[0].nucleo and "Renan Santos" in afs[0].nucleo
+
+
+def test_prompt_mantem_autor_de_fala_atribuida():
+    # merge #19+#20: sem nome de caso de teste no prompt (higiene do PR19); exemplo do PR19 vale.
+    assert "mantenha o autor" in _af._INSTRUCAO and "Fulano disse" in _af._INSTRUCAO

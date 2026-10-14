@@ -97,6 +97,10 @@ class FonteEvidencia(BaseModel):
     tipo_fonte: Literal["veredito", "corroboracao", "descoberta"] = "descoberta"
     veredito: Optional[str] = None
     selo_original: Optional[str] = None
+    # pagina (ClaimReview lido) | indice (base de checagens) | titulo-busca (só o título do
+    # resultado de agência curada: aparece na resposta, não vota — regra E3)
+    origem_veredito: Optional[str] = None
+    afirmacao_checada: Optional[str] = None  # o que a agência checou (o selo vale para ISTO)
     confianca: Optional[float] = None
     # Deep crawl (check #2): prova de corpo lido, não só manchete
     trecho_corpo: Optional[str] = None

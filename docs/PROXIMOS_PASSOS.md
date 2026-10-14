@@ -85,7 +85,7 @@ aceitar o selo quando vier no formato atribuído. Branch nova a partir da `main`
 - [x] **E3. Fonte lida só pelo título não vota** ✅ (decidido: título não vota; indeterminada 65% aceita) (`decisao.py`: hoje `F_SO_TITULO = 0.7`): nem postura nem selo;
   aparece na lista como "não analisada integralmente"; se nenhuma fonte lida tiver postura → "evidência
   insuficiente". ⚠️ **Impacto medido (nível 0)**: 91 de 153 posturas do snapshot vêm só de título;
-  indeterminada 39% → 65%, acerto+parcial 56,5% → 30,4%, graves 1 → 2. **Aguarda decisão da usuária** (§5.1).
+  indeterminada 39% → 65%, acerto+parcial 56,5% → 30,4%, graves 1 → 2. **Decidido** (§5.1, resolvida): título não vota; indeterminada ~65% aceita.
 - [x] **E4. Regra de data** (`aplicabilidade.py`, `config.py`) ✅ implementado (09/10, branch `feat/fase-eb-followup`): marcas "hoje/agora/ontem/nesta semana/acaba de"
   × data de publicação (janelas 2/3/8 dias, configuráveis). Fonte com data incompatível perde peso (desconto em bits, sem zerar) e não torna a checagem aplicável no gate E1. **Não eleva a propensão** (decidido em 09/10, §5.2). Regressão obrigatória:
   "Bolsonaro recebeu alta do hospital hoje" (o índice devolve uma checagem antiga do Boatos.org), coberta offline em `0ebcd57`. **Pendente:** medição em record (Task 8 Steps 3–7 do plano; aprovação e cassetes).
@@ -141,29 +141,40 @@ Números de referência já simulados estão em `REVIEW_2.md §3`.
   reproduzida. Se voltar, rodar com `PYTHONFAULTHANDLER=1` (registra a pilha) e suspeitar de biblioteca nativa
   (lxml/trafilatura em thread).
 
-### Fase D — busca (nível 3; **pedir aprovação e informar custo antes**)
+### Fase D — busca (nível 3; **pedir aprovação e informar custo antes**) — plano `docs/superpowers/plans/2026-10-09-fases-d-f.md`
 
-- [ ] **D1.** Trocar o `site:` com 13 agências em OR por `site:` de um domínio por vez nas 3–4 agências mais
-  relevantes; filtrar homes/listagens antes do juiz. (Com E1, a web só roda quando a base não resolve.)
-- [ ] **D2.** Manter o autor da fala ("Fulano disse X").
-- [ ] **D3.** Não crawlear Instagram/Facebook/TikTok (0 corpos em 264) nem PDFs. Relevante para E3: se título não
-  vota, crawlear rede social é custo sem retorno.
-- [ ] **D4.** Reformulação sem "checagem/é falso" e sem inventar entidades.
-- [ ] **D5.** Veredito pelo título dos resultados de agências curadas — só depois de D1.
+- [~] **D1.** `site:` de um domínio por vez: implementado atrás de `AGENTE_SITES_MODO=separado`
+  (`AGENTE_SITES_SEPARADOS=3`; padrão continua `or`). Listagens (`/page/N`, `/tag/`, `/autor/`) saem antes da
+  leitura. Medição em 5 casos (09/10, `eval/ITERACOES.md`): `separado` usa 60% mais busca e não trouxe mais
+  fontes do tema; inconclusivo. Pendências no fim do plano.
+- [x] **D2.** Autor da fala mantido; moldura de encaminhamento ("Recebi no grupo: “…” é verdade?") é tirada antes
+  das afirmações; negação citada não vira afirmação positiva.
+- [x] **D3.** Rede social (Instagram, Facebook, X, TikTok, YouTube…) e PDF não são baixados; aparecem no trace
+  como `nao_lida` com o motivo. SerpAPI ganha 1 nova tentativa em timeout/queda de conexão.
+- [x] **D4.** Reformulação sem palavra de veredito ("falso", "boato", "checagem") e sem nome próprio que não está na
+  afirmação; o fallback determinístico também.
+- [x] **D5.** Selo pelo título de agência curada ("É falso que X") aparece na resposta como "selo da agência no
+  título: FALSO para <afirmação>", **sem votar** (regra E3); sem página lida, só se a afirmação do título for a
+  mesma do usuário.
 
 ### Fase F — base de checagens e operação (recomendações do PR #11)
 
-- [ ] **F1. Atualização diária da base**: `python3 -m factcheck_mvp.ingestor --sem-paginas --historico 5`
-  (hoje a base só cresce quando alguém roda).
-- [ ] **F2. Mais agências**: Comprova e Aos Fatos (sem API do WordPress → sitemap); AFP Checamos e UOL Confere
-  (403 para acesso automatizado); E-Farsas (503 em 07/10, tentar de novo); Google Fact Check Tools API
-  (ClaimReview de todas; precisa de chave).
-- [ ] **F3. Lupa sem selo (53% de 8.937)**: muitos posts são reportagem, não checagem → filtrar por categoria
-  (como no Boatos.org) ou buscar o ClaimReview só desses posts (sem `--sem-paginas`).
-- [ ] **F4. Tamanho de `data/checagens.jsonl` (19 MB, versionado)**: decidir entre manter, comprimir (`.gz`) ou
-  gerar localmente pelo ingestor.
-- [ ] **F5. Alerta de chave expirada**: `/saude` acusar quando o OpenRouter responder 401 (expira 22/10).
-- [ ] **F6. `.env.mvp.example`**: documentar `OPENROUTER_REASONING_EFFORT=none` e `OPENROUTER_RPM=30`.
+- [x] **F1. Atualização diária da base**: `.github/workflows/atualizar-base.yml` (6h, abre PR; trava =
+  `scripts/bench_indice_checagens.py --gate`). Precisa liberar em Settings > Actions > General "Allow GitHub
+  Actions to create and approve pull requests". Se a trava falhar, o motivo mais comum é checagem nova da mesma
+  história de um caso `fora_do_indice`: excluir em `checagens_holdout_excluidas.json` com `motivo_exclusao`.
+- [x] **F2. Mais agências** pelo sitemap (só entra página com selo; até 150 páginas novas por agência e execução):
+  AFP 0 → 142, UOL 0 → 11, Aos Fatos 12 → 151, Comprova 20 → 138. E-Farsas: API do WordPress ainda 503 (09/10),
+  fica o RSS. Aos Fatos bloqueia robôs de IA pelo nome no `robots.txt` (libera o genérico): a equipe decide se
+  mantém. Google Fact Check Tools API já integrada como base extra (PR #21): preencher
+  `GOOGLE_FACTCHECK_API_KEY` no `.env` para ligá-la (só com `INDICE_CHECAGENS=1`).
+- [~] **F3. Lupa**: ingestão só de Verificação/Checagem/Achado (API e RSS). A poda do que já está na base
+  (`--podar-categorias`, tiraria 1.821 registros sem selo) **não foi aplicada**: derruba recall@3 do índice de
+  0,86 para 0,82 sem reduzir falso positivo. Decisão da equipe.
+- [x] **F4.** Base versionada como `data/checagens.jsonl.gz` (18 MB → 4 MB; gzip determinístico).
+- [x] **F5.** `/saude` mostra a chave do OpenRouter (válida, expira em, dias, saldo, aviso a < 5 dias); o bot avisa
+  quando a chave é recusada.
+- [x] **F6.** `.env.mvp.example` com todas as variáveis lidas pelo código (teste garante).
 
 ### Fase G — da auditoria de 13/10 (`eval/ITERACOES.md`, entrada "Auditoria de agentes e prompts")
 
@@ -194,8 +205,8 @@ e anos fora dos números (P1/P4/P6), prompts de afirmações e do juiz, `PADROES
 
 ## 5. Decisões que são do usuário (pergunte; não decida sozinho)
 
-1. **E3**: seguir à risca "título nunca vota", mesmo com indeterminada ~65% no snapshot, ou antes ampliar a
-   leitura (ex.: `crawl4ai` para páginas que exigem JavaScript)?
+1. ~~**E3**: seguir à risca "título nunca vota", mesmo com indeterminada ~65% no snapshot, ou antes ampliar a
+   leitura (ex.: `crawl4ai` para páginas que exigem JavaScript)?~~ **Resolvida:** seguir "título não vota"; indeterminada ~65% aceita (ver E3).
 2. ~~**E4**: fonte antiga que CONFIRMA o fato apresentado como atual eleva a propensão ("possível notícia antiga
    fora de contexto"), e a que REFUTA um episódio antigo só não vota — de acordo?~~ **Resolvida em 09/10 pela usuária:** não há sinal que eleve a propensão por notícia antiga. Fonte de outro período perde peso nos dois sentidos (desconto simétrico); o nível só pode ficar mais extremo quando a fonte antiga de sinal oposto perde peso, desde que a direção venha de fontes dentro do período. Extremo sustentado só por fonte descontada fica vetado (trava `so_fontes_de_outro_periodo`).
 3. Política de `sem_evidencia`: `alta` para "boato sem prova" é erro ou acerto?

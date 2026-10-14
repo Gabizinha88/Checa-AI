@@ -89,6 +89,7 @@ def amb(monkeypatch):
     async def fake_aprofundar(cands, catalogo, **kw):
         out = {}
         for d in cands:
+            corpos.setdefault("_baixadas", set()).add(d["url"])  # registro p/ testes de "não baixar"
             c = corpos.get(d["url"])
             if c is None:
                 out[d["url"]] = CorpoLido(url=d["url"], erro="HTTP 403")
@@ -1252,3 +1253,84 @@ def test_i1_data_absoluta_da_duplicata_nao_cai_para_pagina_de_tier_menor(monkeyp
                                       _peca_i1(_URL_I1 + "?utm_source=news", "2026-10-06", "dia", "6 de out. de 2026")],
                         "2026-10-07")
     assert (p["data_pub"], p["data_pub_precisao"], p["data_pub_bruta"]) == ("2026-10-06", "dia", "6 de out. de 2026")
+
+
+def test_regra_de_data_usa_o_texto_do_usuario(amb, monkeypatch):
+    """Regressão da simulação de 09/10 (0/5 nos casos de data): o LLM de afirmações descarta
+    "Hoje," — a regra de data precisa olhar o texto ORIGINAL do usuário, senão a checagem de 2018
+    vira aplicável, a web é pulada e o fato antigo sai como 'baixa'.
+
+    Adaptado no merge #19+#20: referência explícita (`data_referencia`), sem relógio oculto (E4/M6)."""
+    monkeypatch.setenv("INDICE_CHECAGENS", "1")
+    juiz = _juiz_falso()
+
+    def llm_tira_hoje(messages, max_tokens, timeout_s, finalidade):
+        if finalidade == "afirmacoes":
+            texto = messages[-1]["content"].split('"""')[1].strip()
+            nuc = re.sub(r"(?i)^hoje,\s*", "", texto)
+            nuc = nuc[0].upper() + nuc[1:]
+            return json.dumps([{"afirmacao": nuc, "nucleo": nuc, "polaridade": "afirma",
+                                "consulta": nuc.lower()}]), "fake"
+        return juiz(messages, max_tokens, timeout_s, finalidade)
+    monkeypatch.setattr(llm, "_local", llm_tira_hoje)
+    url = "https://www.agencialupa.org/jornalismo/2018/11/19/verificamos-medicos-estrangeiros/"
+    alvo = "Bolsonaro quis impedir familiares de médicos estrangeiros de trabalhar no Brasil"
+    idx = Indice.de_checagens([{"url": url, "titulo": f"É verdade que {alvo}", "afirmacao_checada": alvo,
+                                "selo_original": "verdade", "veredito": "VERDADEIRO", "agencia": "lupa",
+                                "data_pub": "2018-11-19", "trecho": f"A Lupa confirma: {alvo}."}]
+                              + [{"url": f"https://lupa.uol.com.br/z{i}", "titulo": t, "afirmacao_checada": t,
+                                  "selo_original": "Falso", "veredito": "FALSO", "agencia": "lupa", "trecho": t}
+                                 for i, t in enumerate(["Vacina altera o DNA humano", "Urnas foram fraudadas em 2022",
+                                                        "Limão em jejum cura diabetes", "Governo vai confiscar poupança",
+                                                        "Água gelada causa gripe"])])
+    amb[url] = f"A Lupa confirma: {alvo}. " * 40
+    chamadas = {"n": 0}
+
+    class Contadora(FakeSerp):
+        def buscar(self, q):
+            chamadas["n"] += 1
+            return super().buscar(q)
+    rel = asyncio.run(Pipeline(Catalogo.carregar(), idx, Indice(), serpapi=Contadora([]), detector=MockDetector())
+                      .executar(EntradaConsulta(tipo="texto", conteudo=f"Hoje, {alvo}",
+                                                data_referencia="2026-10-09")))
+    assert any(e.nome == "base-checagem" and e.status == "ok" for e in rel.etapas)  # a base achou a checagem
+    assert not any(e.nome == "descoberta" and e.status == "pulada" and "checagem aplicável" in e.detalhe
+                   for e in rel.etapas)                                             # e ela NÃO bloqueou a web
+    assert chamadas["n"] > 0
+
+
+@pytest.mark.parametrize("url,esperado", [
+    ("https://www.boatos.org/esporte/page/4", "listagem"),
+    ("https://www.boatos.org/page/540", "listagem"),
+    ("https://www.boatos.org/author/kyene-becker/page/32", "listagem"),
+    ("https://www.boatos.org/author/admin?paged=8", "listagem"),
+    ("https://g1.globo.com/tag/vacina/", "listagem"),
+    ("https://www.boatos.org/saude/gatos-morrem-apos-comerem-whiskas.html", None),
+    ("https://g1.globo.com/saude/noticia/2024/01/a.ghtml", None),
+])
+def test_listagem_sai_antes_da_leitura(url, esperado):
+    m = pl._motivo_descarte(url)
+    assert (m is not None and esperado in m) if esperado else m is None
+
+
+@pytest.mark.parametrize("url,legivel", [
+    ("https://www.instagram.com/p/1", False), ("https://m.facebook.com/x/posts/1", False),
+    ("https://www.youtube.com/watch?v=1", False), ("https://www.camara.leg.br/a.pdf", False),
+    ("https://diariodoisgatos.wordpress.com/2012/05/17/fim/", True),   # blog: é lido
+    ("https://medium.com/@x/texto", True), ("https://g1.globo.com/a.ghtml", True),
+])
+def test_ilegivel_nao_e_baixado(url, legivel):
+    assert (pl._nao_legivel(url) is None) == legivel
+
+
+def test_rede_social_listada_sem_baixar_e_listagem_fora(amb):
+    social = {"link": "https://www.instagram.com/p/abc/", "title": "Café cura câncer, diz post",
+              "snippet": "Post viral diz que café cura câncer"}
+    listagem = {"link": "https://www.boatos.org/saude/page/7", "title": "Saúde - página 7",
+                "snippet": "Café cura câncer e outros boatos"}
+    rel = _rodar("Café cura câncer", _prep(amb, TRES_REFUTAM) + [social, listagem])
+    urls = {f.url for f in rel.fontes}
+    assert "https://www.boatos.org/saude/page/7" not in urls          # listagem: fora
+    assert amb.get("_baixadas")                                          # a leitura rodou (guarda anti-vácuo)
+    assert "https://www.instagram.com/p/abc/" not in amb["_baixadas"]   # mas não tentou a rede social
+    assert rel.propensao == "alta"                                      # evidência legível segue decidindo

@@ -38,7 +38,7 @@ def classificar(texto: str, tipo: Optional[str] = None) -> EntradaConsulta:
 
 
 def construir_pipeline(serpapi=None, detector=None):
-    """Pipeline igual ao da API: catálogo + índice de checagens (data/checagens.jsonl),
+    """Pipeline igual ao da API: catálogo + índice de checagens (data/checagens.jsonl.gz),
     que só é consultado com INDICE_CHECAGENS=1 (atalho opcional; núcleo = busca aberta)."""
     from .catalogo import Catalogo
     from .indice import Indice

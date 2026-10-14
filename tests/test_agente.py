@@ -85,6 +85,39 @@ def test_plano_onda1_consulta_depois_agencias_e_max_32_palavras():
         assert len(q["q"].split()) <= 32, q["q"]
 
 
+def test_plano_onda1_sites_separados(monkeypatch):
+    """D1: modo `separado` = 1 consulta `site:` por agência (as k primeiras), intercaladas por agência."""
+    monkeypatch.setattr(config, "AGENTE_SITES_MODO", "separado")
+    monkeypatch.setattr(config, "AGENTE_SITES_SEPARADOS", 2)
+    ags = [{"id": "a", "site": "a.org"}, {"id": "a", "site": "a2.org"},  # alias da mesma agência: pula
+           {"id": "b", "site": "g1.globo.com/fato-ou-fake"}, {"id": "c", "site": "c.org"}]
+    alvos = [_alvo(0, "Ibuprofeno cura dengue", "ibuprofeno cura dengue"), _alvo(1, "vacina dna", "vacina altera dna")]
+    plano = agente.plano_onda1(alvos, ags)
+    assert [(q["q"], ais) for q, ais, _ in plano] == [
+        ("ibuprofeno cura dengue", [0]), ("vacina altera dna", [1]),
+        ("ibuprofeno cura dengue site:a.org", [0]), ("vacina altera dna site:a.org", [1]),
+        ("ibuprofeno cura dengue site:g1.globo.com/fato-ou-fake", [0]),
+        ("vacina altera dna site:g1.globo.com/fato-ou-fake", [1])]
+    assert [m for _, _, m in plano][2:4] == ["agencia a", "agencia a"]
+    monkeypatch.setattr(config, "AGENTE_SITES_MODO", "or")
+    assert [m.split(" ")[0] for _, _, m in agente.plano_onda1(alvos, ags)] == ["consulta", "consulta", "agencias", "agencias"]
+
+
+def test_onda1_sites_separados_respeita_teto(monkeypatch):
+    monkeypatch.setattr(config, "AGENTE_SITES_MODO", "separado")
+    monkeypatch.setattr(config, "AGENTE_SITES_SEPARADOS", 3)
+    cli = FakeSerp(lambda q: [])
+    alvos = [_alvo(i, f"afirmacao numero {i} sobre tema", f"tema {i} consulta") for i in range(3)]
+    est = _rodar_onda1(alvos, cli, teto=9, max_extras=1)
+    assert len(cli.chamadas) == 6  # 9 - 3 de reserva p/ ondas extras
+    simples = {q for q in cli.chamadas if "site:" not in q}
+    com_site = [q for q in cli.chamadas if "site:" in q]
+    assert simples == {"tema 0 consulta", "tema 1 consulta", "tema 2 consulta"}
+    # as 3 buscas site: restantes = a 1ª agência para CADA afirmação (intercalado), não 3 agências da 1ª
+    assert len(com_site) == 3 and {q.split(" site:")[0] for q in com_site} == simples
+    assert len({q.split(" site:")[1] for q in com_site}) == 1
+
+
 def test_consulta_fallback_usa_termos_de_conteudo():
     al = agente.alvos_de([Afirmacao(texto="O ibuprofeno cura a dengue em 3 dias", consulta="")])[0]
     assert al.consulta and "ibuprofeno" in al.consulta.lower() and " a " not in f" {al.consulta} "
@@ -251,12 +284,59 @@ def test_reformular_fallback_marcado(monkeypatch):
     assert len(q.split()) <= 32
 
 
+@pytest.mark.parametrize("consulta", [
+    "Michelle Bolsonaro Lula joias",      # nome próprio que não está na afirmação
+    "Michelle Bolsonaro joias é falso",   # palavra de veredito puxa checagem de outro boato
+    "michelle bolsonaro joias checagem",
+    "boato joias Michelle Bolsonaro",
+])
+def test_reformular_rejeita_entidade_inventada_e_palavra_de_veredito(monkeypatch, consulta):
+    monkeypatch.setattr(config, "OPENROUTER_API_KEY", "")
+    respostas = [consulta, "Michelle Bolsonaro joias sauditas receita federal"]
+    prompts = []
+
+    def fake(messages, max_tokens, timeout_s, finalidade):
+        prompts.append(messages[-1]["content"])
+        return json.dumps({"consulta": respostas[min(len(prompts) - 1, 1)]}), "fake"
+    monkeypatch.setattr(llm, "_local", fake)
+    al = _alvo(0, "Michelle Bolsonaro vendeu joias sauditas", "michelle bolsonaro joias")
+    q, motor = agente.reformular(al, ["michelle bolsonaro joias"], [])
+    assert len(prompts) == 2 and motor.startswith("llm-reformular")  # 1ª rejeitada -> retry
+    assert q == "Michelle Bolsonaro joias sauditas receita federal"  # sinônimo/termo comum: aceito
+
+
+def test_reformular_aceita_palavra_de_veredito_que_esta_na_afirmacao(monkeypatch):
+    monkeypatch.setattr(config, "OPENROUTER_API_KEY", "")
+    monkeypatch.setattr(llm, "_local", lambda *a, **k: (json.dumps({"consulta": "Comissão da Verdade relatório mortos"}), "fake"))
+    al = _alvo(0, "A Comissão da Verdade listou 434 mortos", "comissão da verdade mortos")
+    q, _ = agente.reformular(al, ["comissão da verdade mortos"], [])
+    assert q == "Comissão da Verdade relatório mortos"
+
+
+def test_prompt_e_fallback_de_reformular_sem_palavra_de_veredito(monkeypatch):
+    assert '"é falso", "checagem"' not in agente.PROMPT_REFORMULAR  # não sugere mais palavra de veredito
+    assert "Não use palavras de veredito" in agente.PROMPT_REFORMULAR
+    assert "Não acrescente pessoas" in agente.PROMPT_REFORMULAR
+    al = _alvo(0, "Ibuprofeno cura dengue em 3 dias", "ibuprofeno cura dengue")
+    feitas = ["ibuprofeno cura dengue"]
+    vistos = set()
+    for _ in range(3):
+        q = agente._fallback_reformular(al, feitas)
+        if q is None:
+            break
+        assert not ({"falso", "checagem", "verdade", "boato"} & set(agente._norm(q).split())), q
+        assert q not in vistos
+        vistos.add(q)
+        feitas.append(q)
+    assert vistos
+
+
 # ----------------------------------------------------------------------------- pipeline (integração)
 REGRAS_IBU = [(r"[^.]*(ibuprofeno[^.]*(é falso|não cura)|(é falso|não cura)[^.]*ibuprofeno)[^.]*", "REFUTA"),
               (r"[^.]*ibuprofeno[^.]*comprov[^.]*", "SUSTENTA")]
 
 
-def _llm_falso(regras, consulta_nova="ibuprofeno dengue risco hemorragia checagem", chamadas=None):
+def _llm_falso(regras, consulta_nova="ibuprofeno dengue risco hemorragia anvisa", chamadas=None):
     def fake(messages, max_tokens, timeout_s, finalidade):
         conteudo = messages[-1]["content"]
         if chamadas is not None:
@@ -339,7 +419,7 @@ def test_critico_nao_para_com_checagem_fora_do_tema_e_onda_extra_acha_evidencia(
                 "Ibuprofeno não cura dengue", "É falso que o ibuprofeno cura dengue; o remédio aumenta o risco.")
     g1 = _pag(amb, "https://g1.globo.com/saude/noticia/2026/09/ibuprofeno-dengue.ghtml",
               "Médicos alertam sobre dengue", "Especialistas explicam que o ibuprofeno não cura dengue e é contraindicado.")
-    nova = "ibuprofeno dengue risco hemorragia checagem"
+    nova = "ibuprofeno dengue risco hemorragia anvisa"
 
     def rota(q):
         if q == nova:
@@ -364,7 +444,7 @@ def test_critico_nao_para_com_checagem_fora_do_tema_e_onda_extra_acha_evidencia(
 def test_onda_extra_quando_zero_resultados(amb):
     lupa = _pag(amb, "https://lupa.uol.com.br/jornalismo/2026/09/ibuprofeno/", "Ibuprofeno e dengue",
                 "É falso que o ibuprofeno cura dengue, dizem infectologistas.")
-    nova = "ibuprofeno dengue risco hemorragia checagem"
+    nova = "ibuprofeno dengue risco hemorragia anvisa"
     serp = FakeSerp(lambda q: [lupa] if q == nova else [])
     rel = asyncio.run(_rodar("Ibuprofeno cura dengue", serp))
     crit = [d for t, d in amb["eventos"] if t == "agente"]
@@ -394,7 +474,7 @@ def test_url_da_onda_extra_ja_vista_ganha_a_afirmacao(amb):
     vier para outra afirmação; para a mesma afirmação não entra de novo no juiz."""
     fora = _pag(amb, "https://exame.com/casa/receita-bolo-cenoura/", "Receita de bolo",
                 "O bolo leva três ovos.")
-    nova = "ibuprofeno dengue risco hemorragia checagem"
+    nova = "ibuprofeno dengue risco hemorragia anvisa"
     serp = FakeSerp(lambda q: [fora])
     rel = asyncio.run(_rodar("Ibuprofeno cura dengue", serp))
     assert len(serp.chamadas) == 3 and serp.chamadas[-1] == nova
@@ -581,3 +661,41 @@ def test_ler_fatia_crawl_acima_do_cap_por_chamada(amb, monkeypatch):
     assert all(pa == 12 for _, pa in chamadas), chamadas
     assert n_lidas == n_alvo == 36, (n_lidas, n_alvo)
     assert not _sem_fallback_deep_crawl(amb), amb["eventos"]
+
+
+def test_selo_pelo_titulo_de_agencia_curada_aparece_mas_nao_vota(amb):
+    """D5 (decisão a): título "É falso que X" de agência curada traz o selo mesmo sem a página
+    lida; ele aparece na fonte (origem titulo-busca) mas não entra nos vereditos aplicados."""
+    af = _org("https://www.aosfatos.org/noticias/ibuprofeno-dengue-falso/",
+              "É falso que o ibuprofeno cura dengue", "Ibuprofeno não cura dengue, dizem médicos.")
+    blog = _org("https://blogqualquer.net/ibuprofeno-dengue/",
+                "É falso que o ibuprofeno cura dengue", "Ibuprofeno não cura dengue, dizem médicos.")
+    serp = FakeSerp(lambda q: [af] if "site:" in q else [blog])  # nenhuma página lida (403)
+    rel = asyncio.run(_rodar("Ibuprofeno cura dengue", serp))
+    fontes = {f.url: f for f in rel.fontes}
+    f_af, f_blog = fontes[af["link"]], fontes[blog["link"]]
+    assert not f_af.corpo_lido and f_af.postura is None  # página não lida não vai ao juiz
+    assert f_af.afirmacao_checada == "O ibuprofeno cura dengue"
+    assert f_af.veredito == "FALSO" and f_af.origem_veredito == "titulo-busca" and f_af.selo_original == "falso"
+    assert f_blog.veredito is None and f_blog.origem_veredito is None  # não curado: nada
+    dec = [d for t, d in amb["eventos"] if t == "decisao"][-1]
+    assert not dec["decisao"]["vereditos_aplicados"]  # não vota (regra E3)
+    assert any(d.get("decisao") == "selo_titulo" for t, d in amb["eventos"] if t == "fonte")
+
+
+def test_selo_pelo_titulo_de_outro_boato_nao_aparece(amb):
+    outro = _org("https://www.aosfatos.org/noticias/lula-preso-falso/", "É falso que Lula foi preso", "Lula não foi preso.")
+    serp = FakeSerp(lambda q: [outro])
+    rel = asyncio.run(_rodar("Ibuprofeno cura dengue", serp))
+    f = next(f for f in rel.fontes if f.url == outro["link"])
+    assert f.veredito is None and f.origem_veredito is None and f.afirmacao_checada is None
+
+
+def test_rotulo_do_selo_pelo_titulo_diz_a_origem_e_a_afirmacao():
+    from factcheck_mvp.agregador import rotulo_selo
+    from factcheck_mvp.schemas import FonteEvidencia
+    f = FonteEvidencia(url="u", veredito="FALSO", origem_veredito="titulo-busca",
+                       afirmacao_checada="O ibuprofeno cura dengue")
+    assert rotulo_selo(f) == "selo da agência no título: FALSO para “O ibuprofeno cura dengue”"
+    assert rotulo_selo(FonteEvidencia(url="u", veredito="FALSO", origem_veredito="pagina")) == "selo da agência: FALSO"
+    assert rotulo_selo(FonteEvidencia(url="u")) == ""

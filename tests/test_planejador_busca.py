@@ -411,11 +411,11 @@ def test_pipeline_ler_mais_acha_a_checagem_sem_reformular(amb, monkeypatch, liga
 
 def test_pipeline_sem_planejador_nao_chega_nas_checagens_alem_dos_8(amb, monkeypatch):
     monkeypatch.setattr(config, "BUSCA_PLANEJADOR", False)
-    fake = _llm(["ibuprofeno dengue risco hemorragia checagem"])
+    fake = _llm(["ibuprofeno dengue risco hemorragia anvisa"])
     monkeypatch.setattr(llm, "_local", fake)
     serp = _cenario_ler_mais(amb)
     rel = _rodar("Ibuprofeno cura dengue em 3 dias", serp)
-    assert serp.chamadas[-1] == "ibuprofeno dengue risco hemorragia checagem" and len(serp.chamadas) == 3
+    assert serp.chamadas[-1] == "ibuprofeno dengue risco hemorragia anvisa" and len(serp.chamadas) == 3
     assert rel.propensao == "indeterminada"                            # comportamento de antes: parou na 1ª extra
 
 

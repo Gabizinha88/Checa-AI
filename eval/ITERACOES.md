@@ -223,6 +223,47 @@ Branch `feat/e1-base-primeiro`. Docs/metrificação, sem mudança de código de 
   nenhum `eval.run`/CLI `checar` foi executado nesta task (sem cassetes); os run_ids no
   snapshot (`20260930-...`) são dos traces antigos reutilizados.
 
+## 2026-10-09 — Fases D–F: base de checagens (Tarefas 9, 10, 12)
+
+- Hipótese: Aos Fatos, Comprova, AFP e UOL quase não estavam na base (12, 20, 0 e 0 registros)
+  porque não têm API do WordPress e os RSS da AFP/UOL davam 404. O sitemap de cada um lista as
+  checagens; baixando a página, o ClaimReview traz o selo.
+- Mudança: leitor de sitemap no ingestor (só entra página com selo; teto de 150 páginas novas por
+  agência e execução, 1 req/s por site); base passa a `data/checagens.jsonl.gz`; Lupa só com
+  categorias de checagem na ingestão (a poda da base atual foi medida e **não** aplicada: recall@3
+  0,86 → 0,82, FP igual).
+- Higiene do holdout: o sitemap trouxe 15 checagens da **mesma história** de casos `fora_do_indice`
+  (Aos Fatos e UOL: Janja "nem Deus tira", Lula/Janja R$ 7 bi, hackers nas urnas, filha de Lula
+  presa etc.). Sem exclusão, o benchmark marcava 16 falsos positivos (21%) em vez de 6. Foram para
+  `data/checagens_holdout_excluidas.json` com `motivo_exclusao`, igual ao backfill de 07/10. Nenhum
+  caso, rótulo ou `esperado` foi alterado.
+- Bench índice depois: recall@1 0,77 → 0,68 (2 casos em que outra agência checou a mesma
+  afirmação com o mesmo selo e ficou em 1º: `cr_estribo_caminhao_lixo`, `cr_china_acai_amapa`),
+  recall@3 0,86 (igual), FP 7,9% (igual). Base: 21.579 → 21.976 registros.
+- Sem eval.run (sem cassetes) e sem custo de SerpAPI/LLM.
+
+## 2026-10-09 — Tarefa 5 (D1): `site:` separado por agência × `site:` em OR
+
+- Hipótese: uma consulta `site:` por agência (3 primeiras do catálogo) traz mais resultados do tema que uma
+  consulta única com ~12 agências em OR.
+- Mudança: `AGENTE_SITES_MODO=separado` (`f50ffd1`); padrão segue `or`.
+- Medição (`--modo record`, `INDICE_CHECAGENS=0`, 43 buscas live): 8 casos fixos (seed 42, estratificado), mas o
+  teto de 22 buscas cortou 3 no modo `or`; comparação nos 5 comuns.
+
+| | or (`20261009-113701-t5-or`) | separado (`20261009-114347-t5-separado`) |
+|---|---|---|
+| acerto / +parcial | 3/5 / 3/5 | 3/5 / 4/5 |
+| indeterminada | 2 | 1 |
+| erro grave | 0 | 0 |
+| consultas SerpAPI | 15 | 24 |
+| fontes que o juiz diz tratar do tema | 28 de 79 | 28 de 72 |
+| p50 por caso | 67 s | 45 s |
+
+- run_ids or: 113702-edc1f9, 113809-8b1f5a, 113910-5879ce, 113953-e3adaa, 114107-cd326e; separado:
+  114347-1b353d, 114411-aaebf0, 114457-e5d94f, 114543-4d980d, 114629-9248aa (prefixo 20261009-).
+- Conclusão: inconclusivo com 5 casos; `separado` gasta 60% mais busca sem trazer mais fontes do tema. Padrão
+  mantido em `or`. Achado lateral: 4 buscas por modo caíram em timeout mesmo com a nova tentativa (15 s).
+
 ## Iteração Fase E/B follow-up + E4 (09/10 — 2026-10-09)
 
 Branch `feat/fase-eb-followup` @ `c7a8868` (base `main` @ `56c4b33`). Sem rede, sem cassetes e sem `runs/` neste ambiente: só medição de nível 0 (offline) e pytest. Nenhum `eval.run` foi executado.
@@ -415,7 +456,7 @@ Auditoria E (Opus, independente, dados puxados do Langfuse): os 78% de r5 são e
 base vieram da própria `url_checagem` do caso); pela web foram 11/22 = 50% (IC95 31–69%). Itens implementados por 8
 agentes Sonnet em paralelo (worktrees), integrados por merge; **tudo que muda decisão está atrás de flag desligada**.
 
-| item | o que | flag | 
+| item | o que | flag |
 |---|---|---|
 | A1 | fonte deixada de fora, repetições sem cache do juiz, `eval/comparar_simulacoes.py` (Wilson, McNemar) | `EVAL_MODO=1` |
 | A4 | trecho do juiz único (`trecho_juiz.py`): título + lide + conclusão + frases relevantes, sem boilerplate; `n_chars_trecho` mede o prompt | `JUIZ_TRECHO_MODO=novo` (padrão) / `antigo` |
@@ -435,3 +476,29 @@ agentes Sonnet em paralelo (worktrees), integrados por merge; **tudo que muda de
 - **Pendente:** linha de base e medição final com web (o comando que subia a API com a chave da SerpAPI na linha de
   comando foi bloqueado pelo classificador de permissões; aguarda a usuária pôr a chave no `.env`). Nenhuma flag deve
   virar padrão antes disso.
+
+## 2026-10-14 — Merge PR #19 (auditoria) + PR #20 (fases D–F): resolução de conflitos
+
+- Objetivo: deixar os dois PRs mergeáveis. Nenhuma flag mudou de padrão; nenhum caso, rótulo ou baseline alterado.
+- Decisões (usuária, 14/10): reformulação de consulta segue o PR20 em **todos** os motores (prompt sem palavra de
+  veredito, validação de nomes/veredito, fallback neutro), preservando a camada Google News do PR19
+  (`montar_prompt_reformular` + candidatas do fallback). Nos demais prompts o PR19 vence; exceção registrada: o
+  exemplo "Sérgio Sacani" do PR20 no prompt de afirmações foi trocado pelo equivalente "Fulano" (regra do PR19:
+  nenhum nome de caso de teste no prompt); o literal "mantenha o autor" entrou.
+- Selo de título (D5) × P2/E3: o selo do título aparece (`origem_veredito="titulo-busca"`, `veredito` preenchido)
+  mas não vota e não vira `tipo_fonte="veredito"` (`_selo_vota` do main preservado); `veredito_normalizado` segue o
+  do main (não propaga o selo do título).
+- `_motivo_descarte`: listagem (`/page/N`, `/author`, `/tag`, `paged=`) checada antes de homepage — mesmos descartes,
+  motivo "listagem" para o teste do PR20.
+- Testes editados por mudança deliberada de regra de resolução (não por rótulo): `test_robustez_web` (orgânico
+  também sem vocabulário de veredito), `test_planejador_busca` (consulta fake sem "checagem": a validação global
+  rejeita), `test_afirmacoes` (exemplo de atribuição: Sacani→Fulano), `test_pipeline::test_regra_de_data...`
+  (referência explícita `data_referencia`, sem relógio oculto).
+- Medições (worktree do merge; base `checagens.jsonl.gz`, 21.976 registros): pytest **1.214 passed**; bench índice
+  **r@3 0,8636 / FP 7 de 76 (9,2%)** — +1 FP vs 6/76 das medições separadas (interação P1/P4 × base do sitemap;
+  FPs: cr_flavio_tirar_padroeira, cr_pf_compra_votos_lula_para, cr_filha_de_lula_presa, tema:9, tema:11, tema:14,
+  tema:15; ainda dentro do gate ≤10%); `bench_recall_frases`: `checadas_falsas` **138/140** (mantém o ganho do PR19
+  na base nova), `verdadeiras` 9/11, `antigas_como_atuais` 5/5.
+- Pendências (não bloqueiam o merge): a poda da Lupa deve usar estes números novos; medição final da Missão F segue
+  bloqueada por chave SerpAPI/OpenRouter; decisões de produto (sem_evidencia/B4, P3(c), P7, polaridade determinística,
+  padrão `AGENTE_SITES_MODO`) continuam com a usuária.

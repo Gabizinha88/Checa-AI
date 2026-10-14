@@ -227,3 +227,180 @@ def test_reprocessar_offline_da_selo_sem_rede(tmp_path):
     assert por["https://b.test/1"]["afirmacao_checada"] == "Água gelada faz mal; causa câncer"
     assert por["https://b.test/2"]["veredito"] == "FALSO" and por["https://b.test/2"]["origem"] == "articlebody"
     assert por["https://b.test/3"]["veredito"] == "ENGANOSO"
+
+
+def test_jsonl_gz_grava_le_e_e_deterministico(tmp_path):
+    """F4: a base versionada é .jsonl.gz; gravar duas vezes o mesmo conteúdo dá os mesmos bytes
+    (gzip com mtime=0), então o PR diário só muda quando a base muda."""
+    from factcheck_mvp.indice import Indice
+    regs = [{"url": "https://ag.test/a/", "titulo": "É falso que X", "afirmacao_checada": "X"},
+            {"url": "https://ag.test/b/", "titulo": "Ação e coração", "afirmacao_checada": "ç"}]
+    arq = tmp_path / "checagens.jsonl.gz"
+    ing.gravar_jsonl(arq, regs)
+    b1 = arq.read_bytes()
+    assert b1[:2] == b"\x1f\x8b" and gzip.decompress(b1).decode("utf-8").count("\n") == 2
+    ing.gravar_jsonl(arq, regs)
+    assert arq.read_bytes() == b1
+    assert ing.carregar_jsonl(arq) == regs
+    assert Indice.de_checagens(arq).checagens == regs
+    plano = tmp_path / "checagens.jsonl"  # .jsonl sem gzip segue funcionando
+    ing.gravar_jsonl(plano, regs)
+    assert ing.carregar_jsonl(plano) == regs and Indice.de_checagens(plano).checagens == regs
+
+
+def test_base_padrao_e_gz():
+    from factcheck_mvp import indice
+    assert ing.ARQ_CHECAGENS.name == "checagens.jsonl.gz" == indice.ARQ_CHECAGENS.name
+
+
+def _rss_cats(itens):
+    xs = "".join(f"<item><title>{t}</title><link>{l}</link>" + "".join(f"<category>{c}</category>" for c in cs)
+                 + "</item>" for t, l, cs in itens)
+    return f'<?xml version="1.0"?><rss version="2.0"><channel>{xs}</channel></rss>'.encode()
+
+
+def test_lupa_so_categorias_de_checagem(monkeypatch):
+    """F3: RSS da Lupa traz reportagem/opinião; fica o que é Verificação/Checagem/Achado ou tem selo."""
+    lupa = next(f for f in ing.FONTES if f["agencia"] == "lupa")
+    assert "categories=142,147,6915" in lupa["wpjson_params"]
+    rss = _rss_cats([("Vídeo antigo de Lula é editado", "https://lupa.test/v", ["Jornalismo", "Verificação"]),
+                     ("Zema recorre a fake contra Lula", "https://lupa.test/r", ["Jornalismo", "Reportagem"]),
+                     ("É falso que X fez Y", "https://lupa.test/s", ["Jornalismo", "Reportagem"]),
+                     ("Sem categoria no feed", "https://lupa.test/n", [])])
+    monkeypatch.setattr(ing.Baixador, "baixar", lambda self, url: (200, rss, url) if "feed" in url else (404, b"", url))
+    fonte = dict(lupa, feeds=["https://lupa.test/feed/"], wpjson=None)
+    b = ing.Baixador()
+    try:
+        links = [it["link"] for it in ing.coletar_itens(b, fonte, 100, 1, [], None)]
+    finally:
+        b.fechar()
+    assert links == ["https://lupa.test/v", "https://lupa.test/s", "https://lupa.test/n"]
+
+
+def test_podar_fora_das_categorias(monkeypatch):
+    lupa = next(f for f in ing.FONTES if f["agencia"] == "lupa")
+    pag1 = json.dumps([{"link": f"https://lupa.test/c{i}/"} for i in range(100)]).encode()
+    pag2 = json.dumps([{"link": "https://lupa.test/c100/"}]).encode()
+    pedidas = []
+
+    def baixar(self, url):
+        pedidas.append(url)
+        return (200, pag1 if "page=1&" in url else pag2, url)
+    monkeypatch.setattr(ing.Baixador, "baixar", baixar)
+    regs = [{"agencia": "lupa", "url": "https://lupa.test/c5", "veredito": None},     # na categoria: fica
+            {"agencia": "lupa", "url": "https://lupa.test/rep", "veredito": None},    # fora e sem selo: sai
+            {"agencia": "lupa", "url": "https://lupa.test/rep2", "veredito": "FALSO"},  # fora com selo: fica
+            {"agencia": "boatos", "url": "https://boatos.test/x", "veredito": None}]  # outra agência: fica
+    b = ing.Baixador()
+    try:
+        ficam, saem = ing.podar_fora_das_categorias(b, lupa, regs, log=lambda *a: None)
+    finally:
+        b.fechar()
+    assert [r["url"] for r in saem] == ["https://lupa.test/rep"]
+    assert len(ficam) == 3 and all("categories=142,147,6915" in u and "_fields=link" in u for u in pedidas)
+    assert len(pedidas) == 2
+
+
+def test_podar_cancela_com_lista_incompleta(monkeypatch):
+    lupa = next(f for f in ing.FONTES if f["agencia"] == "lupa")
+    pag1 = json.dumps([{"link": f"https://lupa.test/c{i}/"} for i in range(100)]).encode()
+    monkeypatch.setattr(ing.Baixador, "baixar",
+                        lambda self, url: (200, pag1, url) if "page=1&" in url else (503, b"", url))
+    regs = [{"agencia": "lupa", "url": "https://lupa.test/rep", "veredito": None}]
+    b = ing.Baixador()
+    try:
+        ficam, saem = ing.podar_fora_das_categorias(b, lupa, regs, log=lambda *a: None)
+    finally:
+        b.fechar()
+    assert ficam == regs and saem == []
+
+
+def _urlset(urls):
+    return ('<?xml version="1.0"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+            + "".join(f"<url><loc>{u}</loc><lastmod>{d}</lastmod></url>" for u, d in urls) + "</urlset>").encode()
+
+
+def _indice_sm(filhos):
+    return ('<?xml version="1.0"?><sitemapindex>' + "".join(f"<sitemap><loc>{u}</loc></sitemap>" for u in filhos)
+            + "</sitemapindex>").encode()
+
+
+def test_parse_sitemap_urlset_e_indice():
+    tipo, itens = ing.parse_sitemap(_urlset([("https://ag.test/a", "2026-10-08"), ("https://ag.test/b", "2024-01-02T10:00Z")]))
+    assert tipo == "urlset" and itens == [("https://ag.test/a", "2026-10-08"), ("https://ag.test/b", "2024-01-02")]
+    tipo, itens = ing.parse_sitemap(_indice_sm(["https://ag.test/s1.xml"]))
+    assert tipo == "indice" and itens == [("https://ag.test/s1.xml", None)]
+    assert ing.parse_sitemap(b"<html>nada</html>") == ("", [])
+
+
+def test_coletar_do_sitemap_filtra_pula_conhecidas_e_respeita_teto(monkeypatch):
+    paginas = {
+        "https://ag.test/sitemap.xml": _indice_sm(["https://ag.test/sm-answer.202610.xml", "https://ag.test/sm-tags.xml",
+                                                   "https://ag.test/sm-answer.202609.xml", "https://ag.test/sm-answer.202608.xml"]),
+        "https://ag.test/sm-answer.202610.xml": _urlset([("https://ag.test/checagem/a", "2026-10-08"),
+                                                        ("https://ag.test/sobre", "2026-10-08"),
+                                                        ("https://ag.test/checagem/b", "2026-10-07")]),
+        "https://ag.test/sm-answer.202609.xml": _urlset([("https://ag.test/checagem/c", "2026-09-30"),
+                                                        ("https://ag.test/checagem/d", "2026-09-29")]),
+    }
+    pedidas = []
+
+    def baixar(self, url):
+        pedidas.append(url)
+        return (200, paginas[url], url) if url in paginas else (404, b"", url)
+    monkeypatch.setattr(ing.Baixador, "baixar", baixar)
+    fonte = {"agencia": "ag", "feeds": [], "sitemaps": ["https://ag.test/sitemap.xml"],
+             "sitemap_filhos": r"sm-answer\.", "sitemap_urls": r"/checagem/"}
+    b = ing.Baixador()
+    try:
+        its = ing.coletar_itens(b, fonte, 100, 1, [], None, ja_na_base={ing.chave_url("https://ag.test/checagem/b")},
+                                max_sitemap=2)
+    finally:
+        b.fechar()
+    assert [i["link"] for i in its] == ["https://ag.test/checagem/a", "https://ag.test/checagem/c"]
+    assert its[0]["data"] == "2026-10-08" and its[0]["_sitemap"] is True and its[0]["titulo"] == ""
+    assert "https://ag.test/sm-tags.xml" not in pedidas            # filho fora do filtro
+    assert "https://ag.test/sm-answer.202608.xml" not in pedidas   # teto atingido: para de ler
+
+
+def test_sitemap_so_entra_com_selo(monkeypatch, tmp_path):
+    cr = ('<html><head><script type="application/ld+json">{"@type":"ClaimReview","claimReviewed":"X fez Y",'
+          '"reviewRating":{"alternateName":"Falso"},"headline":"Checagem X"}</script></head></html>')
+    paginas = {"https://ag.test/sm.xml": _urlset([("https://ag.test/c/1", "2026-10-08"), ("https://ag.test/c/2", "2026-10-08")]),
+               "https://ag.test/c/1": cr.encode(), "https://ag.test/c/2": b"<html><h1>Reportagem</h1></html>"}
+    monkeypatch.setattr(ing.Baixador, "baixar", lambda self, url: (200, paginas[url], url) if url in paginas else (404, b"", url))
+    fonte = {"agencia": "ag", "feeds": [], "sitemaps": ["https://ag.test/sm.xml"]}
+    b = ing.Baixador()
+    try:
+        regs = ing.processar_fonte(b, fonte, 100, 1, False, set(), [], log=lambda *a: None)
+        assert [r["url"] for r in regs] == ["https://ag.test/c/1"] and regs[0]["veredito"] == "FALSO"
+        assert ing.processar_fonte(b, fonte, 100, 1, True, set(), [], log=lambda *a: None) == []  # --sem-paginas: nada
+    finally:
+        b.fechar()
+
+
+def test_fontes_com_sitemap():
+    por = {f["agencia"]: f for f in ing.FONTES}
+    for ag in ("aos-fatos", "comprova", "afp-checamos", "uol-confere"):
+        assert por[ag].get("sitemaps"), ag
+
+
+def test_titulo_da_pagina():
+    assert ing.titulo_da_pagina('<meta property="og:title" content="Montagem simula &#8216;g1&#8217;"/>'
+                                '<title>Outro | Aos Fatos</title>') == "Montagem simula ‘g1’"
+    assert ing.titulo_da_pagina("<title>É falso que X | Aos Fatos</title>") == "É falso que X"
+    assert ing.titulo_da_pagina("<p>sem título</p>") == ""
+
+
+def test_resumo_da_atualizacao_diaria():
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    import resumo_atualizacao_base as rb
+    antes = [{"url": "https://a.test/1", "agencia": "lupa", "veredito": "FALSO", "origem": "rss-titulo"}]
+    depois = antes + [{"url": "https://a.test/2", "agencia": "lupa", "veredito": None, "titulo": "Nova", "origem": "rss-titulo"},
+                      {"url": "https://b.test/1", "agencia": "afp-checamos", "veredito": "ENGANOSO", "titulo": "X",
+                       "origem": "claimreview"}]
+    txt = rb.resumo(antes, depois, "limiar padrão {}\n  -> {'recall@3': 0.86, 'taxa_fp': 0.08}\nsem limiar\n  -> {}")
+    assert "**1 → 3 registros** (2 novos)" in txt
+    assert "| lupa | 1 | 2 | 50% |" in txt and "| afp-checamos | 0 | 1 | 100% |" in txt
+    assert "[Nova](https://a.test/2)" in txt and "`{'recall@3': 0.86, 'taxa_fp': 0.08}`" in txt

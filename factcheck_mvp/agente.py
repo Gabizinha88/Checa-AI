@@ -427,12 +427,36 @@ def plano_onda1(alvos: Sequence[Alvo], agencias: Optional[List[Dict[str, Any]]] 
                 ) -> List[Tuple[Dict[str, Any], List[int], str]]:
     """(a) consulta de todas as afirmações, depois (b) consulta + site: das agências."""
     agencias = agencias if agencias is not None else camada.agencias_checagem()
+    if getattr(config, "AGENTE_SITES_MODO", "or") == "separado":
+        return _plano_sites_separados(alvos, agencias)
     a, b = [], []
     for al in alvos:
         a.append((com_motor(camada._base(al.consulta, "google")), [al.indice], "consulta"))
         q_ag, fora = camada.query_agencias(al.consulta, agencias)
         if "site:" in q_ag["q"]:
             b.append((motor_da_consulta(q_ag), [al.indice], "agencias" + (f" (-{len(fora)} fora do limite)" if fora else "")))
+    return _agrupar_iguais(a + b)
+
+
+def _plano_sites_separados(alvos: Sequence[Alvo], agencias: List[Dict[str, Any]]
+                           ) -> List[Tuple[Dict[str, Any], List[int], str]]:
+    """D1: (a) consulta de todas as afirmações, depois 1 `consulta site:X` por agência (uma por id,
+    domínio principal, nas AGENTE_SITES_SEPARADOS primeiras), intercaladas por agência: com teto
+    curto, cada afirmação recebe a 1ª agência antes de alguma receber a 2ª."""
+    k = max(0, int(getattr(config, "AGENTE_SITES_SEPARADOS", 3) or 0))
+    escolhidas, ids = [], set()
+    for ag in agencias:
+        site = str(ag.get("site") or ag.get("host") or "").strip().lower()
+        if len(escolhidas) >= k or ag.get("id") in ids or not camada._SITE_VALIDO.match(site):
+            continue
+        ids.add(ag.get("id"))
+        escolhidas.append((ag.get("id") or site, site))
+    a = [(camada._base(al.consulta, "google"), [al.indice], "consulta") for al in alvos]
+    b = []
+    for ag_id, site in escolhidas:
+        for al in alvos:
+            palavras = (al.consulta or "").split()[:camada.MAX_PALAVRAS_CONSULTA_SITES]
+            b.append((camada._base(f"{' '.join(palavras)} site:{site}", "google"), [al.indice], f"agencia {ag_id}"))
     return _agrupar_iguais(a + b)
 
 
@@ -565,7 +589,9 @@ PROMPT_REFORMULAR = """Você ajuda a checar fatos buscando no Google. As buscas 
 
 Regras:
 - Mantenha as entidades centrais da afirmação (pessoas, órgãos, números, lugares, substâncias).
-- Troque ou acrescente termos que um jornalista ou checador usaria: sinônimo, nome técnico, nome popular, órgão oficial, "é falso", "checagem".
+- Troque ou acrescente termos que um jornalista usaria: sinônimo, nome técnico, nome popular.
+- Não acrescente pessoas, órgãos ou lugares que não estão na afirmação.
+- Não use palavras de veredito ("falso", "boato", "checagem", "verdade"): elas trazem checagens de outros boatos.
 - Não repita nenhuma das consultas já feitas.
 - Não use operadores de busca (site:, aspas, OR, sinal de menos).
 - Evite os assuntos das páginas fora do tema listadas: elas mostram para onde a busca derivou.
@@ -612,7 +638,7 @@ def sem_vocabulario_de_checagem(q: str) -> str:
 def montar_prompt_reformular(afirmacao: str, feitas: Sequence[str], fora: Sequence[Tuple[str, str]]) -> str:
     modelo = PROMPT_REFORMULAR
     if motor_busca() == "google_news":
-        modelo = modelo.replace(', "é falso", "checagem".', ".").replace("buscando no Google.", "buscando no Google News.")
+        modelo = modelo.replace("buscando no Google.", "buscando no Google News.")
         modelo = modelo.replace("- Não repita nenhuma das consultas já feitas.",
                                 "- Não use as palavras checagem, falso, boato, fake nem verdade: o Google News só devolve "
                                 "notícias que tenham TODOS os termos da consulta.\n- Não repita nenhuma das consultas já feitas.")
@@ -622,16 +648,33 @@ def montar_prompt_reformular(afirmacao: str, feitas: Sequence[str], fora: Sequen
         fora="\n".join(f"- {t or '(sem título)'} — {d or '?'}" for t, d in list(fora)[:8]) or "- (nenhuma)")
 
 
+# Palavras de veredito puxam checagens de OUTROS boatos (sondas 09/10): fora da reformulação.
+_VEREDITO = frozenset("falso falsa fake boato boatos checagem checagens checado checada mentira mentiras "
+                      "verdade verdadeiro verdadeira desmentido desmente enganoso enganosa hoax".split())
+
+
+def _problema_consulta(c: str, afirmacao: str) -> Optional[str]:
+    """Motivo para rejeitar a consulta reformulada, ou None. Palavras que já estão na afirmação valem."""
+    da_afirmacao = set(_norm(afirmacao).split())
+    veredito = sorted((set(_norm(c).split()) & _VEREDITO) - da_afirmacao)
+    if veredito:
+        return f"não use palavras de veredito ({', '.join(veredito)}); use só termos do assunto"
+    novos = [p for p in c.split()[1:] if p[:1].isupper() and _norm(p) and _norm(p) not in da_afirmacao]
+    if novos:
+        return f"não acrescente nomes que não estão na afirmação ({', '.join(novos)})"
+    return None
+
+
 def _fallback_reformular(alvo: Alvo, feitas: Sequence[str]) -> Optional[str]:
+    from .afirmacoes import palavras_chave
     termos = consulta_padrao(alvo.texto)
     feitas_n = {_norm(camada.limitar_palavras(q)) for q in feitas}
-    candidatas = (f"{termos} é verdade ou falso", f"{termos} checagem", f"{termos} falso")
+    candidatas = (alvo.consulta, termos, palavras_chave(alvo.texto, 5), f"{termos} notícia")
     if motor_busca() == "google_news":  # sem vocabulário de checagem: menos termos, ou o núcleo em ordem natural
-        candidatas = (" ".join(termos.split()[:4]), " ".join(sem_vocabulario_de_checagem(alvo.texto).split()[:8]))
+        candidatas = (" ".join(termos.split()[:4]),
+                      " ".join(sem_vocabulario_de_checagem(alvo.texto).split()[:8])) + candidatas
     for cand in candidatas:
-        if len(cand.split()) < 2:
-            continue
-        if _norm(cand) not in feitas_n:
+        if cand and len(cand.split()) >= 2 and _norm(cand) not in feitas_n:
             return cand
     return None
 
@@ -650,6 +693,9 @@ def reformular(alvo: Alvo, feitas: Sequence[str], fora: Sequence[Tuple[str, str]
             raise ValueError("a consulta precisa ter pelo menos 2 palavras-chave")
         if _norm(c) in feitas_n:
             raise ValueError("a consulta repete uma das consultas já feitas; escreva uma diferente")
+        problema = _problema_consulta(c, alvo.texto)
+        if problema:
+            raise ValueError(problema)
         dados.consulta = c
         return dados
 

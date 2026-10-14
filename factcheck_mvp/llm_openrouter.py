@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Tuple
 
 from . import config, replay, telemetria
@@ -16,6 +17,10 @@ log = logging.getLogger("factcheck.llm_openrouter")
 _URL = "https://openrouter.ai/api/v1/chat/completions"
 # Jev/TypeSafe: endpoint Decisions (NÃO chat/completions — 400 se usar /v1/...).
 _URL_DECISIONS = "https://openrouter.ai/api/alpha/decisions"
+_URL_CHAVE = "https://openrouter.ai/api/v1/key"  # consulta a chave; não gasta crédito
+_CACHE_STATUS_S = 600
+_AVISO_DIAS = 5
+_cache_status: Dict[str, Any] = {}
 
 
 def _provider() -> Dict[str, Any]:
@@ -56,6 +61,45 @@ def _post(modelo: str, messages: List[dict], max_tokens: int, timeout_s: int) ->
     log.info("openrouter ok model=%s prompt_tokens=%s completion_tokens=%s",
              modelo, uso.get("prompt_tokens"), uso.get("completion_tokens"))
     return texto
+
+
+def status_chave() -> Dict[str, Any]:
+    """Estado da chave para o /saude: {ok, expira_em, dias_restantes, saldo, aviso?} ou {ok, erro}.
+
+    ok=False só quando o OpenRouter recusa a chave (ou ela falta); falha de rede -> ok=None
+    (não se sabe). Cache de 10 min. Nunca devolve nem registra a chave (nem o `label` mascarado).
+    """
+    agora = time.time()
+    if _cache_status and agora - _cache_status["t"] < _CACHE_STATUS_S:
+        return dict(_cache_status["st"])
+    if not config.OPENROUTER_API_KEY:
+        st: Dict[str, Any] = {"ok": False, "erro": "OPENROUTER_API_KEY ausente"}
+    else:
+        try:
+            r = replay.http_get(_URL_CHAVE, headers={"Authorization": f"Bearer {config.OPENROUTER_API_KEY}"},
+                                timeout=10)
+            if r.status_code in (401, 403):
+                st = {"ok": False, "erro": "chave expirada ou inválida"}
+            elif r.status_code >= 400:
+                st = {"ok": None, "erro": f"HTTP {r.status_code}"}
+            else:
+                d = (r.json() or {}).get("data") or {}
+                st = {"ok": True, "expira_em": None, "dias_restantes": None, "saldo": d.get("limit_remaining")}
+                if d.get("expires_at"):
+                    exp = datetime.fromisoformat(str(d["expires_at"]).replace("Z", "+00:00"))
+                    if exp.tzinfo is None:
+                        exp = exp.replace(tzinfo=timezone.utc)
+                    dias = int((exp - datetime.now(timezone.utc)).total_seconds() // 86400)
+                    st.update(expira_em=exp.date().isoformat(), dias_restantes=dias)
+                    if dias < 0:
+                        st = {"ok": False, "erro": "chave expirada ou inválida"}
+                    elif dias < _AVISO_DIAS:
+                        st["aviso"] = f"a chave do OpenRouter expira em {dias} dia(s): gere outra"
+        except Exception as e:
+            st = {"ok": None, "erro": f"{type(e).__name__}: não foi possível consultar a chave"}
+            telemetria.fallback("openrouter.status_chave", type(e).__name__)
+    _cache_status.update(t=agora, st=st)
+    return dict(st)
 
 
 def chat(messages: List[dict], max_tokens: int = 0, temperature: float = 0.0,

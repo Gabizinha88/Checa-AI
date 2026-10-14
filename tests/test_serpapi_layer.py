@@ -319,3 +319,61 @@ def test_cliente_respeita_engine_por_query_e_result_key(monkeypatch):
     assert c.result_key({"engine": "google"}) == "organic_results"
     assert c.result_key({"engine": "google_news"}) == "news_results"
     assert c.ultimo_motivo == "ok"  # organic_results presente
+
+
+class _Resp:
+    def __init__(self, payload):
+        self._p = payload
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self._p
+
+
+def test_timeout_ganha_uma_nova_tentativa(monkeypatch):
+    """Simulação de 09/10: 17/50 checagens perderam busca por timeout. Uma nova tentativa só
+    para timeout/conexão; a 2ª resposta vale e conta UMA busca no uso do dia."""
+    from factcheck_mvp import telemetria
+    chamadas, avisos = [], []
+    monkeypatch.setattr(camada, "SERPAPI_ESPERA_NOVA_TENTATIVA_S", 0)
+    monkeypatch.setattr(telemetria, "fallback", lambda onde, motivo, **k: avisos.append((onde, motivo)))
+
+    def fake_get(url, params=None, timeout=None, **kw):
+        chamadas.append(timeout)
+        if len(chamadas) == 1:
+            raise TimeoutError("curl: (28) Operation timed out after 15001 milliseconds")
+        return _Resp({"organic_results": [{"link": "https://g1.globo.com/a", "title": "T"}]})
+    monkeypatch.setattr(camada.replay, "http_get", fake_get)
+    c = camada.SerpAPIClient(api_key="k", timeout=15)
+    out = c.buscar({"q": "café cura câncer", "hl": "pt-br", "gl": "br"})
+    assert out and out["organic_results"] and len(chamadas) == 2 and chamadas == [15, 15]
+    assert c.uso_hoje == 1 and c.ultimo_motivo == "ok"
+    assert any(o == "serpapi" and "nova tentativa" in m for o, m in avisos)
+
+
+def test_dois_timeouts_viram_erro_e_erro_http_nao_repete(monkeypatch):
+    monkeypatch.setattr(camada, "SERPAPI_ESPERA_NOVA_TENTATIVA_S", 0)
+    chamadas = []
+
+    def sempre_timeout(url, params=None, timeout=None, **kw):
+        chamadas.append(1)
+        raise TimeoutError("timed out")
+    monkeypatch.setattr(camada.replay, "http_get", sempre_timeout)
+    c = camada.SerpAPIClient(api_key="k")
+    assert c.buscar({"q": "x y z", "hl": "pt-br", "gl": "br"}) is None and c.ultimo_motivo == "erro"
+    assert len(chamadas) == 2
+    chamadas.clear()
+
+    def http_500(url, params=None, timeout=None, **kw):
+        chamadas.append(1)
+        raise RuntimeError("HTTP 500 para https://serpapi.com/search.json")
+    monkeypatch.setattr(camada.replay, "http_get", http_500)
+    assert c.buscar({"q": "outra consulta", "hl": "pt-br", "gl": "br"}) is None
+    assert len(chamadas) == 1                                    # erro HTTP: sem nova tentativa
+
+
+def test_timeout_padrao_vem_do_config(monkeypatch):
+    monkeypatch.setattr(camada.config, "SERPAPI_TIMEOUT_S", 12)
+    assert camada.SerpAPIClient(api_key="k").timeout == 12

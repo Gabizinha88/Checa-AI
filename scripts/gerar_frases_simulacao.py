@@ -1,6 +1,6 @@
 """Gera eval/frases_simulacao.json: o conjunto rotulado de onde a simulação sorteia.
 
-Nenhum rótulo é inventado: cada frase vem de uma checagem de agência (data/checagens.jsonl)
+Nenhum rótulo é inventado: cada frase vem de uma checagem de agência (data/checagens.jsonl.gz)
 ou de um caso já rotulado do eval (só split `dev`; o holdout fica intocado).
 
 Frases longas e completas: das checagens do Boatos.org entra a DESCRIÇÃO do boato como circulou
@@ -33,7 +33,7 @@ from pathlib import Path
 RAIZ = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(RAIZ))
 
-from factcheck_mvp.ingestor import carregar_excluidas, carregar_jsonl, chave_url  # noqa: E402
+from factcheck_mvp.ingestor import ARQ_CHECAGENS, carregar_excluidas, carregar_jsonl, chave_url  # noqa: E402
 
 SAIDA = RAIZ / "eval" / "frases_simulacao.json"
 MAX_DESCRICOES_BOATOS = 100       # descrições completas de boatos (Boatos.org), amostra fixa por hash
@@ -160,7 +160,7 @@ def _casos_eval():
 
 def gerar(data_ref: date) -> list:
     excl = carregar_excluidas()
-    base = [r for r in carregar_jsonl(RAIZ / "factcheck_mvp" / "data" / "checagens.jsonl")
+    base = [r for r in carregar_jsonl(ARQ_CHECAGENS)
             if chave_url(r.get("url", "")) not in excl]
     frases, usadas = [], set()
 

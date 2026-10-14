@@ -51,9 +51,37 @@ def _sem_acento(s: str) -> str:
     return unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode()
 
 
+# Moldura de encaminhamento ("Recebi isso no grupo: “X” Alguém sabe se é verdade?"): não faz parte
+# da alegação. Sem tirá-la, "É falso que X" citado não casa a moldura de negação (que exige o
+# início do texto) e o LLM checa X — simulação de 09/10: único falso alarme.
+_INTRO_ENCAMINHADA = re.compile(
+    r"^\s*(?:gente,?\s*|pessoal,?\s*|oi,?\s*)?(?:recebi|me mandaram|me enviaram|me passaram|"
+    r"est[ãa]o (?:compartilhando|mandando|espalhando)|(?:minha|meu) [\wà-ú]+ (?:encaminhou|mandou|postou)|"
+    r"encaminharam|vi (?:um|uma|no|na|isso)|olha (?:isso|o que|só)|circula|t[áa] circulando)"
+    r"[^:“\"]{0,90}:\s*", re.I)
+_CITACAO = re.compile(r"^[“\"](.+?)[”\"]\s*(.*)$", re.S)
+_PERGUNTA_FINAL = re.compile(
+    r"\s*(?:algu[ée]m sabe se (?:é|e) verdade|isso procede|procede|d[áa] pra confiar|é verdade ou (?:é )?fake|"
+    r"é verdade|é real|é fake|isso é verdade|será)\s*\?*\s*$", re.I)
+
+
+def tirar_encaminhamento(texto: str) -> str:
+    """'Recebi isso no grupo: “X” Alguém sabe se é verdade?' -> 'X'. Texto sem moldura volta igual."""
+    t = (texto or "").strip()
+    m = _INTRO_ENCAMINHADA.match(t)
+    if not m:
+        return t
+    resto = t[m.end():].strip()
+    c = _CITACAO.match(resto)
+    if c and (not c.group(2) or _PERGUNTA_FINAL.fullmatch(" " + c.group(2))):
+        return c.group(1).strip()
+    return _PERGUNTA_FINAL.sub("", resto).strip() or t
+
+
 def normalizar_entrada(texto: str) -> str:
-    """CAIXA ALTA → caixa de frase; '!!!'/'???' → um sinal; apelos removidos; espaços colapsados."""
-    t = re.sub(r"\s+", " ", (texto or "")).strip()
+    """Moldura de encaminhamento removida; CAIXA ALTA → caixa de frase; '!!!'/'???' → um sinal;
+    apelos removidos; espaços colapsados."""
+    t = re.sub(r"\s+", " ", tirar_encaminhamento(texto or "")).strip()
     t = re.sub(r"([!?.,;:])[!?.,;:]+", r"\1", t)
     letras = [c for c in t if c.isalpha()]
     if len(letras) >= 8 and sum(c.isupper() for c in letras) / len(letras) >= 0.7:
@@ -239,7 +267,7 @@ Responda SOMENTE com um array JSON, sem texto antes ou depois. Cada item:
 Regras:
 1. "afirmacao": o que o TEXTO afirma, em português, com as palavras do texto, frase autocontida (sem pronomes soltos). Não acrescente fatos. NUNCA traduza para outro idioma. Preserve números, datas e marcadores de tempo exatamente como estão (ex.: "30 mil", "2022", "hoje", "agora", "acabou de sair", "ontem").
 2. Negação: se o TEXTO nega uma alegação ("É falso que X", "Não é verdade que X", "X não faz Y"), "afirmacao" mantém a negação, "nucleo" é a alegação X na forma afirmativa (sem a negação) e "polaridade" é "nega". Se não há negação, "nucleo" repete "afirmacao" (sem os marcadores de tempo, regra 5) e "polaridade" é "afirma". A negação conta mesmo dentro de aspas ou depois de uma moldura ("Recebi isso: “É falso que X”" → polaridade "nega"). A pergunta final ("é verdade?") não é negação. Mas se a negação está DENTRO da oração relatada de uma atribuição ("a PF concluiu que não teve corrupção", "Fulano disse que não vai disputar"), ela faz parte do que foi atribuído: "afirmacao" e "nucleo" mantêm a frase inteira, com a negação, e a polaridade é "afirma". "nega" é só para quando o TEXTO rejeita a alegação.
-3. Moldura x atribuição. (a) Descarte a MOLDURA de como a mensagem chegou ("me mandaram", "vi um post", "recebi no grupo", "estão compartilhando") e as perguntas ("é verdade?", "dá pra confiar?"): extraia só o conteúdo que ela traz. (b) PRESERVE a atribuição quando o conteúdo diz que uma pessoa, órgão ou estudo disse, escreveu, chamou, decidiu, concluiu ou mostrou algo ("Fulano disse que X", "a PF concluiu X", "estudo aponta X"): a afirmação e o núcleo são a frase inteira, com o autor, porque o que se checa é se ele de fato o fez. Só remova o relator quando for mera circulação sem autor identificado ("circula um áudio afirmando X", "dizem que X" → X).
+3. Moldura x atribuição. (a) Descarte a MOLDURA de como a mensagem chegou ("me mandaram", "vi um post", "recebi no grupo", "estão compartilhando") e as perguntas ("é verdade?", "dá pra confiar?"): extraia só o conteúdo que ela traz. (b) PRESERVE a atribuição quando o conteúdo diz que uma pessoa, órgão ou estudo disse, escreveu, chamou, decidiu, concluiu ou mostrou algo ("Fulano disse que X", "a PF concluiu X", "estudo aponta X"): a afirmação e o núcleo são a frase inteira, com o autor — mantenha o autor, porque o que se checa é se ele de fato o fez. Só remova o relator quando for mera circulação sem autor identificado ("circula um áudio afirmando X", "dizem que X" → X).
 4. "consulta": 5 a 8 palavras-chave em português, tiradas do núcleo, para buscar o tema no Google Notícias, que exige TODOS os termos (se o núcleo for curto, use todas as palavras importantes dele). Mantenha os acentos. Não invente termos que não estão no texto. Sem aspas, sem operadores e sem palavras-ruído: marcadores de tempo, moldura de entrega, "é verdade", "fake", "falso", "boato", "não" e verbos de relato sem autor ("mostra", "circula").
 5. "nucleo" NÃO leva marcadores de tempo ("agora", "hoje", "ontem", "acabou de sair", "Agora:") nem moldura de entrega: eles dizem quando ou como a mensagem chegou, não qual é o fato. "marcadores_tempo" é a lista dos marcadores relativos de tempo do TEXTO que se referem a esta afirmação, como aparecem (ex.: ["hoje"]); [] se não há. Não coloque aí moldura de entrega nem datas absolutas.
 6. Ignore saudações, apelos ("compartilhe", "urgente") e opiniões. No máximo {n} itens. Se não houver nenhuma afirmação factual, responda [].
