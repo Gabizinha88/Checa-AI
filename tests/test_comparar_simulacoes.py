@@ -58,3 +58,12 @@ def test_metricas_de_trace(tmp_path):
     m = cmp.metricas_trace(tmp_path)
     assert (m["itens_juiz"], m["itens_com_veredito"]) == (2, 1)
     assert (m["buscas"], m["vazias"], m["achou_agencia"]) == (2, 1, True)
+
+
+def test_carregar_junta_rodadas_retomadas(tmp_path):
+    for nome, rep in (("a", 0), ("b", 1)):
+        (tmp_path / nome).mkdir()
+        (tmp_path / nome / "dados.json").write_text(json.dumps(
+            {"meta": {"repeticoes": 1}, "casos": [_reg("x", "checadas_falsas", "falso", "alta", rep)]}), encoding="utf-8")
+    d = cmp.carregar(f"{tmp_path / 'a'}+{tmp_path / 'b'}")
+    assert len(d["casos"]) == 2 and d["meta"]["repeticoes"] == 2

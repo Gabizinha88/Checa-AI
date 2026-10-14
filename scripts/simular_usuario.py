@@ -60,6 +60,8 @@ def main(argv=None) -> int:
     ap.add_argument("--frases", type=Path, default=sim.ARQ_FRASES)
     ap.add_argument("--repeticoes", type=int, default=1,
                     help="roda cada frase K vezes; da 2ª em diante o juiz não reaproveita o cassete (A1)")
+    ap.add_argument("--rep-inicial", type=int, default=0,
+                    help="número da primeira repetição (retoma uma rodada: --rep-inicial 1 --repeticoes 2 = reps 1 e 2)")
     ap.add_argument("--excluir-fonte", action="store_true",
                     help="deixa de fora do índice e da web a url_checagem do caso (a API precisa de EVAL_MODO=1)")
     ap.add_argument("--rotulo", default="", help="nome da rodada (vai no meta e no nome da pasta)")
@@ -102,7 +104,7 @@ def main(argv=None) -> int:
     meta = {"inicio": sim.agora_iso(), "seed": a.seed, "n": a.n, "url": a.url, "commit": _commit(),
             "frases": str(a.frases.relative_to(RAIZ)) if a.frases.is_relative_to(RAIZ) else str(a.frases),
             "faltas": faltas, "estimativa_serpapi": est, "cota_serpapi_antes": cota,
-            "concorrencia": a.concorrencia, "max_buscas": a.max_buscas, "repeticoes": max(1, a.repeticoes),
+            "concorrencia": a.concorrencia, "max_buscas": a.max_buscas, "repeticoes": max(1, a.repeticoes), "rep_inicial": a.rep_inicial,
             "excluir_fonte": bool(a.excluir_fonte), "rotulo": a.rotulo}
 
     def enviar(payload):
@@ -120,7 +122,7 @@ def main(argv=None) -> int:
     trava, gastas = Lock(), [0]
     K = max(1, a.repeticoes)
     # repetição por fora: todas as frases na repetição 0, depois todas na 1… (a ordem de envio não vicia a repetição)
-    tarefas = [(i, r) for r in range(K) for i in range(len(amostra))]
+    tarefas = [(i, r) for r in range(a.rep_inicial, a.rep_inicial + K) for i in range(len(amostra))]
     regs = [None] * len(tarefas)
     pasta = a.saida / f"simulacao_{inicio:%Y-%m-%d_%H%M}{('_' + a.rotulo) if a.rotulo else ''}"
     pasta.mkdir(parents=True, exist_ok=True)

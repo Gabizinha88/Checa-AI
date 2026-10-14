@@ -65,9 +65,17 @@ def pct(k: int, n: int) -> str:
 
 # --------------------------------------------------------------------------- dados
 def carregar(caminho: str) -> Dict[str, Any]:
-    p = Path(caminho)
-    arq = p / "dados.json" if p.is_dir() else p
-    return json.loads(arq.read_text(encoding="utf-8"))
+    """Pasta ou dados.json. Várias pastas separadas por `+` (rodadas retomadas com --rep-inicial) viram uma
+    simulação só: os casos se somam e o meta é o da primeira."""
+    partes = []
+    for c in caminho.split("+"):
+        p = Path(c)
+        partes.append(json.loads((p / "dados.json" if p.is_dir() else p).read_text(encoding="utf-8")))
+    if len(partes) == 1:
+        return partes[0]
+    meta = dict(partes[0].get("meta", {}))
+    meta["repeticoes"] = sum(int(x.get("meta", {}).get("repeticoes", 1)) for x in partes)
+    return {"meta": meta, "casos": [r for x in partes for r in x["casos"]]}
 
 
 def celulas(dados: Dict[str, Any]) -> List[Dict[str, Any]]:
