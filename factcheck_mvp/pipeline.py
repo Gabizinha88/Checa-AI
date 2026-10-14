@@ -608,6 +608,10 @@ class Pipeline:
             itens=itens, vago=eh_vago, opiniao=eh_opiniao, rumor=eh_rumor, juiz_disponivel=juiz_ok,
             n_lidas=_contar_lidas(pecas), n_consultadas=len(pecas), texto_usuario=texto_base,
             data_referencia=ref)
+        # Missão F / A3: se UM julgamento SUSTENTA/REFUTA decide o nível, rejulga-o (sem cache) e vota.
+        from . import autoconsistencia
+        if usar_llm and autoconsistencia.habilitada():
+            await asyncio.to_thread(autoconsistencia.aplicar, ev, pecas, afs, julg)
         telemetria.evento("evidencias", **asdict(ev))
         dec = decisao.decidir(ev)
         nivel_agregador = dec.nivel

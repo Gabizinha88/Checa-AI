@@ -207,3 +207,9 @@ INDICE_TRAVA_SIM_MIN = _float("INDICE_TRAVA_SIM_MIN", 0.6)
 # Missão F / item 7 (Extrator): limpeza determinística pós-LLM do núcleo e da consulta (tira marcadores
 # temporais, moldura de entrega e palavras-ruído que zeram o AND do Google News). Muda consultas: padrão 0.
 EXTRATOR_LIMPEZA = _bool("EXTRATOR_LIMPEZA", False)
+# Missão F / A3 — autoconsistência do juiz: quando UM julgamento SUSTENTA/REFUTA decide o nível (um só
+# cluster com voto), o item é rejulgado K-1 vezes sem cache (temperatura > 0 + seed por repetição) e vale a
+# maioria; se as classes divergirem na direção, o item vira RELATA_SEM_ENDOSSO. Padrão desligado.
+JUIZ_AUTOCONSISTENCIA = _get("JUIZ_AUTOCONSISTENCIA", "0").strip().lower() in ("1", "true", "sim", "on")
+JUIZ_AUTOCONSISTENCIA_K = _int("JUIZ_AUTOCONSISTENCIA_K", 3)  # julgamentos no total (o original + K-1)
+JUIZ_AUTOCONSISTENCIA_TEMP = _float("JUIZ_AUTOCONSISTENCIA_TEMP", 0.5)  # temperatura das repetições
