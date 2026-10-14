@@ -199,3 +199,9 @@ BUSCA_LER_MAX = _int("BUSCA_LER_MAX", 16)
 BUSCA_FORA_TEMA_FRACAO = _float("BUSCA_FORA_TEMA_FRACAO", 0.5)
 # Ondas extras por afirmação com o planejador (o padrão sem ele é AGENTE_MAX_ONDAS_EXTRAS = 1).
 BUSCA_EXTRAS_MAX = _int("BUSCA_EXTRAS_MAX", 3)
+# Missão F / A3 — autoconsistência do juiz: quando UM julgamento SUSTENTA/REFUTA decide o nível (um só
+# cluster com voto), o item é rejulgado K-1 vezes sem cache (temperatura > 0 + seed por repetição) e vale a
+# maioria; se as classes divergirem na direção, o item vira RELATA_SEM_ENDOSSO. Padrão desligado.
+JUIZ_AUTOCONSISTENCIA = _get("JUIZ_AUTOCONSISTENCIA", "0").strip().lower() in ("1", "true", "sim", "on")
+JUIZ_AUTOCONSISTENCIA_K = _int("JUIZ_AUTOCONSISTENCIA_K", 3)  # julgamentos no total (o original + K-1)
+JUIZ_AUTOCONSISTENCIA_TEMP = _float("JUIZ_AUTOCONSISTENCIA_TEMP", 0.5)  # temperatura das repetições

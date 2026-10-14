@@ -714,11 +714,39 @@ def _saida_chat(d: Any) -> str:
         return ""
 
 
+# Missão F / A3 (autoconsistência): temperatura própria das repetições do juiz. A chave de cassete distinta por
+# repetição vem do sal (`com_sal`, A1); aqui só se garante amostragem > 0 (a temperatura entra no payload).
+_temperatura_ctx: contextvars.ContextVar[Optional[float]] = contextvars.ContextVar("llm_temperatura", default=None)
+
+
+class temperatura:
+    """`with temperatura(0.5):` — as chamadas `llm_post` do bloco (chat com `messages`) saem com essa temperatura.
+    Fora do bloco o payload fica intacto (chaves de cassete antigas valem)."""
+
+    def __init__(self, valor: float):
+        self.valor = float(valor)
+        self._tok = None
+
+    def __enter__(self):
+        self._tok = _temperatura_ctx.set(self.valor)
+        return self
+
+    def __exit__(self, *a):
+        try:
+            _temperatura_ctx.reset(self._tok)
+        except (ValueError, RuntimeError):
+            _temperatura_ctx.set(None)
+        return False
+
+
 def llm_post(url: str, payload: Dict[str, Any], headers: Optional[Dict[str, str]] = None,
              timeout: float = 60, motor: str = "", finalidade: Optional[str] = None,
              extrair: Optional[Callable[[Any], str]] = None) -> Resposta:
     """POST de LLM via http_post + evento `llm` (motor, modelo, finalidade…)."""
     fin = finalidade or telemetria.finalidade_atual() or _inferir_finalidade()
+    temp = _temperatura_ctx.get()
+    if temp is not None and isinstance(payload, dict) and "messages" in payload:
+        payload = {**payload, "temperature": temp}
     prompt = payload.get("messages") if isinstance(payload, dict) else None
     if prompt is None and isinstance(payload, dict):
         prompt = {k: v for k, v in payload.items() if k != "model"}
@@ -727,6 +755,8 @@ def llm_post(url: str, payload: Dict[str, Any], headers: Optional[Dict[str, str]
             "prompt_sha": telemetria.sha_curto(prompt_txt), "n_chars_prompt": len(prompt_txt)}
     if telemetria.prompts_habilitados():  # TELEMETRIA_PROMPTS=1: o prompt inteiro, para auditar
         base["prompt"] = prompt
+    if temp is not None:
+        base["temperatura"] = temp
     kw: Dict[str, Any] = {"timeout": timeout}
     if headers is not None:
         kw["headers"] = headers
