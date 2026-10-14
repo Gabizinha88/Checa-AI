@@ -960,7 +960,7 @@ class Pipeline:
         juiz_disp = bool(usar_llm) and (juiz_ok or not selecionados)
         try:
             # max_extras + 1 passes: o último só registra a avaliação final do crítico (parar)
-            for rodada in range(max(0, estado.max_extras) + 1):
+            for rodada in range(estado.n_passes()):  # Missão F / A5: n_passes() = max_extras+1 sem o planejador
                 onda = 2 + rodada
                 pedidos = []
                 for ai in range(len(afs)):
@@ -973,9 +973,13 @@ class Pipeline:
                     d = _agente.criticar(estado, res, juiz_disp)
                     if d["decisao"] == "nova_onda":
                         pedidos.append((ai, res))
-                if not pedidos:
+                # Missão F / A5: antes de gastar busca, lê mais dos resultados já obtidos (fora do tema)
+                ler_afs = _agente.planejador.ler_mais(estado, pedidos, onda)
+                pedidos = [(ai, res) for ai, res in pedidos if ai not in ler_afs]
+                if not pedidos and not ler_afs:
                     break
-                await avisar("Agente de busca: reformulando a busca para afirmações sem evidência…")
+                if pedidos:
+                    await avisar("Agente de busca: reformulando a busca para afirmações sem evidência…")
                 reformuladas = await asyncio.to_thread(
                     lambda: [(ai, *_agente.reformular(alvos[ai], estado.queries.get(ai, []), res.fora_do_tema,
                                                       usar_llm)) for ai, res in pedidos])
@@ -983,7 +987,7 @@ class Pipeline:
                 for ai, q, motor in reformuladas:
                     if not q:
                         estado.decisoes.append(f"onda {onda} af{ai}: sem consulta nova (todas já feitas)")
-                if not pedidos_q:
+                if not pedidos_q and not ler_afs:
                     break
                 await _agente.onda_extra(estado, self.serpapi, pedidos_q, onda)
                 if estado.parar_motivo == "timeout":
@@ -1008,7 +1012,7 @@ class Pipeline:
                     pecas.append(p)
                     idx[k] = len(pecas) - 1
                     n_novas += 1
-                alvo_afs = {ai for ai, _, _ in pedidos_q}
+                alvo_afs = {ai for ai, _, _ in pedidos_q} | ler_afs
                 await self._ler(afs, pecas, avisar)
                 sel = self._selecionar(afs, pecas, excluir=set(julg), afs_alvo=alvo_afs)
                 if sel:
@@ -1022,6 +1026,7 @@ class Pipeline:
                 etapa(f"agente-onda-{onda}", "ok" if sel else "parcial",
                       f"Crítico pediu onda {onda} p/ af{sorted(alvo_afs)}: "
                       + "; ".join(f"af{ai} {q!r} ({motor})" for ai, q, motor in pedidos_q)
+                      + (f"; leu mais resultados já obtidos p/ af{sorted(ler_afs)}" if ler_afs else "")
                       + f". {n_novas} peça(s) nova(s), {n_somadas} já vista(s) somada(s) à afirmação; "
                       f"{len(sel)} julgada(s): {n['SUSTENTA']} sustentam, {n['REFUTA']} refutam, "
                       f"{n['RELATA_SEM_ENDOSSO']} só relatam, {n['NAO_TRATA']} fora do tema. {estado.resumo()}.",
